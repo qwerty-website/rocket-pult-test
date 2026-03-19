@@ -14,9 +14,13 @@
 </head>
 <body>
 <div id="fb-root"></div>
+<script src="https://cdn.jsdelivr.net/npm/eruda@3/eruda.js" onload="eruda.init()"></script>
 
-	<!-- Progression mode must load FIRST so it can intercept data.js fetch -->
-	<script src="progression.js"></script>
+	<!-- PeerJS for multiplayer WebRTC connections -->
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+
+	<!-- Multiplayer overlay — loads before the game engine -->
+	<script src="multiplayer.js"></script>
 
 	<script src="opusDecoder.js"></script>
 <script src="c2runtime.js"></script>
