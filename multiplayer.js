@@ -100,29 +100,69 @@
     } catch(e){ return null; }
   }
 
-  function getScrollInfo() {
+  // Read the C2 camera — tries every known property name across C2 versions
+  function getCameraInfo() {
     var rt = findRuntime();
-    if (!rt || !rt.running_layout) return null;
+    if (!rt) return null;
+    var layout = rt.running_layout;
+    if (!layout) return null;
+
+    // 1. Layout-level scroll (set by ScrollTo behavior — most reliable)
+    var lx = layout.scrollX !== undefined ? layout.scrollX
+           : layout.scroll_x !== undefined ? layout.scroll_x : null;
+    var ly = layout.scrollY !== undefined ? layout.scrollY
+           : layout.scroll_y !== undefined ? layout.scroll_y : null;
+    var ls = layout.scale !== undefined ? layout.scale : 1;
+    if (lx !== null && ly !== null) return { sx:lx, sy:ly, sc:ls };
+
+    // 2. Walk layers for Gameplay layer
     try {
-      var layers = rt.running_layout.layers;
-      if (!layers) return null;
-      for (var i = 0; i < layers.length; i++) {
-        var l = layers[i];
-        var sx = (l.scroll_x !== undefined) ? l.scroll_x : (l.scrollX !== undefined ? l.scrollX : null);
-        var sy = (l.scroll_y !== undefined) ? l.scroll_y : (l.scrollY !== undefined ? l.scrollY : null);
-        if (sx !== null && sy !== null) return { sx:sx, sy:sy, sc:l.scale||1 };
+      var layers = layout.layers;
+      if (layers) {
+        for (var pass = 0; pass < 2; pass++) {
+          for (var i = 0; i < layers.length; i++) {
+            var l = layers[i];
+            if (pass === 0 && l.name !== 'Gameplay') continue;
+            var sx = l.scrollX !== undefined ? l.scrollX
+                   : l.scroll_x !== undefined ? l.scroll_x : null;
+            var sy = l.scrollY !== undefined ? l.scrollY
+                   : l.scroll_y !== undefined ? l.scroll_y : null;
+            if (sx !== null && sy !== null) return { sx:sx, sy:sy, sc:l.scale||1 };
+          }
+        }
+      }
+    } catch(e){}
+
+    // 3. Camera sprite position (has ScrollTo behavior in data.js)
+    try {
+      var camT = rt.types['Camera'];
+      if (camT && camT.instances && camT.instances.length) {
+        var c = camT.instances[0];
+        if (c.x !== undefined) return { sx:c.x, sy:c.y, sc:1 };
       }
     } catch(e){}
     return null;
   }
 
   function worldToScreen(wx, wy) {
-    var s = getScrollInfo();
+    var s = getCameraInfo();
     if (!s) return null;
     var cw = overlayEl ? overlayEl.width  : window.innerWidth;
     var ch = overlayEl ? overlayEl.height : window.innerHeight;
-    return { x:(wx - s.sx)*s.sc + cw/2, y:(wy - s.sy)*s.sc + ch/2 };
+    // In C2, scroll = world coord of the screen CENTER
+    return { x: (wx - s.sx) * s.sc + cw/2,
+             y: (wy - s.sy) * s.sc + ch/2 };
   }
+
+  // One-time debug log so we can verify the values are sensible
+  var _camLogged = false;
+  function maybeDumpCamera() {
+    if (_camLogged) return; _camLogged = true;
+    var s = getCameraInfo(), r = getRocketPos();
+    console.log('[MP] cam:', s, 'rocket:', r);
+    if (s && r) console.log('[MP] -> screen:', worldToScreen(r.x, r.y));
+  }
+  setTimeout(maybeDumpCamera, 4000);
 
   /* ═══════════════════════════════════════
      LAUNCH / DEATH DETECTION
@@ -309,6 +349,10 @@
 
     } else if (d.type==='settings_update') {
       settings=Object.assign(settings, d.settings||{});
+      refreshPanel();
+    } else if (d.type==='end_session') {
+      raceEnded=true; raceStarted=false;
+      endRace();
       refreshPanel();
     }
   }
@@ -546,7 +590,7 @@
     }
     var startBtn='';
     if(isHost&&!raceStarted) startBtn='<button class="rp-btn-go" onclick="window.__rpStart()">▶ START</button>';
-    else if(raceStarted&&settings.mode==='sandbox') startBtn='<div class="rp-tag-active">■ SANDBOX ACTIVE</div>';
+    else if(raceStarted&&settings.mode==='sandbox') startBtn=(isHost?'<button class="rp-btn-end" onclick="window.__rpEndSession()">■ END SANDBOX</button>':'<div class="rp-tag-active">■ SANDBOX ACTIVE</div>');
     else if(raceStarted&&settings.mode==='race')    startBtn='<div class="rp-tag-active">🏁 RACE ACTIVE</div>';
     return '<h1>MULTIPLAYER</h1>'
           +(myCode?'<div class="rp-codebox">'+myCode+'</div><div class="rp-sub">SHARE THIS CODE</div>':'')
@@ -593,6 +637,13 @@
   window.__rpSetMode   = function(m){ if(!isHost) return; settings.mode=m; sendToAll({type:'settings_update',settings:settings}); refreshPanel(); };
   window.__rpSetTL     = function(t){ if(!isHost) return; settings.timeLimit=t; sendToAll({type:'settings_update',settings:settings}); refreshPanel(); };
   window.__rpToggleCol = function(){ if(!isHost) return; settings.collision=!settings.collision; sendToAll({type:'settings_update',settings:settings}); refreshPanel(); };
+  window.__rpEndSession = function(){
+    if(!isHost) return;
+    sendToAll({type:'end_session'});
+    endRace();          // reuse race results screen
+    raceEnded=true; raceStarted=false;
+    refreshPanel();
+  };
 
   /* ═══════════════════════════════════════
      CSS
@@ -614,6 +665,7 @@
     '.rp-codebox{font-size:28px;font-weight:bold;color:#44aaff;letter-spacing:10px;text-align:center;border:2px solid #44aaff;padding:8px 4px;margin-bottom:6px;text-shadow:0 0 12px #44aaff;}',
     '#rp-panel input{width:100%;box-sizing:border-box;background:#111;border:2px solid #44aaff;color:#44aaff;font:bold 22px monospace;letter-spacing:8px;text-align:center;padding:7px;text-transform:uppercase;outline:none;display:block;margin-bottom:6px;}',
     '.rp-btn-main,.rp-btn-sec,.rp-btn-dim,.rp-btn-go{width:100%;padding:9px;cursor:pointer;font:bold 9px monospace;letter-spacing:2px;border:2px solid;display:block;margin-bottom:6px;text-align:center;}',
+    '.rp-btn-end{width:100%;padding:9px;cursor:pointer;font:bold 9px monospace;letter-spacing:2px;border:2px solid #ff4444;display:block;margin-bottom:6px;text-align:center;background:#ff4444;color:#fff;}',
     '.rp-btn-main{background:#44aaff;color:#000;border-color:#44aaff;}',
     '.rp-btn-sec{background:#0a0a0a;color:#44aaff;border-color:#44aaff;}',
     '.rp-btn-dim{background:#0d0d0d;color:#334;border-color:#222;}',
