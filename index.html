@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html>
 <head>
@@ -15,7 +14,10 @@
 </head>
 <body>
 <div id="fb-root"></div>
-<script src="https://cdn.jsdelivr.net/npm/eruda@3/eruda.js" onload="eruda.init()"></script>
+
+	<!-- Progression mode must load FIRST so it can intercept data.js fetch -->
+	<script src="progression.js"></script>
+
 	<script src="opusDecoder.js"></script>
 <script src="c2runtime.js"></script>
 <script src="start.js"></script>
