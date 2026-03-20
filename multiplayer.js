@@ -116,9 +116,13 @@
   // Cache the canvas element so we can read its CSS size
   var _gameCanvas = null;
   function getGameCanvas() {
-    if (_gameCanvas) return _gameCanvas;
-    _gameCanvas = document.querySelector('canvas');
-    return _gameCanvas;
+    if (_gameCanvas && _gameCanvas.id !== 'rp-overlay') return _gameCanvas;
+    // Skip our own overlay canvas — find the game canvas
+    var all = document.querySelectorAll('canvas');
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].id !== 'rp-overlay') { _gameCanvas = all[i]; return _gameCanvas; }
+    }
+    return null;
   }
 
   // Pixel-per-world-unit: combines C2's zoom + CSS stretch in one number.
@@ -501,54 +505,60 @@
     window.addEventListener('resize',resize); resize();
   }
 
-  function drawGhost(ctx, sx, sy, angle, color, label){
+  function drawGhost(ctx, sx, sy, angleDeg, color, label){
+    // ── glow dot (always visible, confirms position is correct) ─────
+    ctx.save();
+    ctx.fillStyle   = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur  = 20;
+    ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    // ── rocket body ─────────────────────────────────────────────────
     ctx.save();
     ctx.translate(sx, sy);
-    // C2 rockets point RIGHT at angle=0, so rotate 90° to make them point UP by default
-    ctx.rotate(angle - Math.PI / 2);
+    // C2 angle 0 = pointing RIGHT, stored in DEGREES.
+    // Our shape points UP, so rotate -90deg then add the C2 angle.
+    ctx.rotate(angleDeg * Math.PI / 180 - Math.PI / 2);
 
-    var glow = color;
+    var S = 2.5; // scale multiplier — makes it clearly visible
+    ctx.shadowColor = color; ctx.shadowBlur = 14;
 
-    // ── body ─────────────────────────────────────────
-    ctx.shadowColor = glow; ctx.shadowBlur = 16;
-
-    // main fuselage (filled rectangle)
+    // fuselage
     ctx.fillStyle = color;
-    ctx.fillRect(-5, -18, 10, 28);
+    ctx.fillRect(-5*S, -18*S, 10*S, 28*S);
 
-    // nose cone (filled triangle)
+    // nose cone
     ctx.beginPath();
-    ctx.moveTo(0, -28); ctx.lineTo(-5, -18); ctx.lineTo(5, -18);
+    ctx.moveTo(0, -28*S); ctx.lineTo(-5*S, -18*S); ctx.lineTo(5*S, -18*S);
     ctx.closePath(); ctx.fill();
 
     // fins
     ctx.beginPath();
-    ctx.moveTo(-5, 6);  ctx.lineTo(-13, 16); ctx.lineTo(-5, 10);
+    ctx.moveTo(-5*S, 6*S); ctx.lineTo(-13*S, 16*S); ctx.lineTo(-5*S, 10*S);
     ctx.closePath(); ctx.fill();
     ctx.beginPath();
-    ctx.moveTo(5, 6);   ctx.lineTo(13, 16);  ctx.lineTo(5, 10);
+    ctx.moveTo(5*S,  6*S); ctx.lineTo(13*S,  16*S); ctx.lineTo(5*S,  10*S);
     ctx.closePath(); ctx.fill();
 
-    // engine nozzle
-    ctx.fillStyle = '#333';
-    ctx.fillRect(-4, 10, 8, 6);
+    // nozzle
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(-4*S, 10*S, 8*S, 6*S);
 
-    // colour stripe
+    // white stripe
     ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.fillRect(-2, -14, 4, 12);
+    ctx.fillRect(-2*S, -14*S, 4*S, 12*S);
 
     ctx.shadowBlur = 0;
     ctx.restore();
 
-    // ── name label above rocket ───────────────────────
+    // ── name label ──────────────────────────────────────────────────
     ctx.save();
-    ctx.font        = 'bold 11px monospace';
-    ctx.textAlign   = 'center';
-    ctx.fillStyle   = color;
-    ctx.shadowColor = color;
-    ctx.shadowBlur  = 8;
-    ctx.fillText(label, sx, sy - 34);
-    ctx.shadowBlur  = 0;
+    ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 10;
+    ctx.fillText(label, sx, sy - 56);
+    ctx.shadowBlur = 0;
     ctx.restore();
   }
 
