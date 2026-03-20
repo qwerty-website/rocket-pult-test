@@ -101,23 +101,14 @@
   }
 
   /* ─────────────────────────────────────────────────────────────────
-     worldToScreen  —  converts world coords to canvas pixel coords.
-
-     C2 stores its combined zoom in the Gameplay layer's internal
-     scale value (disp_scale / cur_scale / layerScale — name varies
-     by C2 version).  We try every known name, then fall back to
-     reading the layout's TargetScaleInterpolated global variable,
-     then finally fall back to 1.0.
+     worldToScreen
      ───────────────────────────────────────────────────────────────── */
 
-  // C2 layout resolution (from data.js)
   var GAME_W = 1920, GAME_H = 1080;
 
-  // Cache the canvas element so we can read its CSS size
   var _gameCanvas = null;
   function getGameCanvas() {
     if (_gameCanvas && _gameCanvas.id !== 'rp-overlay') return _gameCanvas;
-    // Skip our own overlay canvas — find the game canvas
     var all = document.querySelectorAll('canvas');
     for (var i = 0; i < all.length; i++) {
       if (all[i].id !== 'rp-overlay') { _gameCanvas = all[i]; return _gameCanvas; }
@@ -125,87 +116,71 @@
     return null;
   }
 
-  // Pixel-per-world-unit: combines C2's zoom + CSS stretch in one number.
-  // This is the only number we need for world→screen projection.
-  function getPPU() {
+  // Try to read C2's TargetScaleInterpolated event-sheet variable.
+  // C2 stores all event-sheet globals in rt.global_vars as an array of
+  // objects with .name and .value properties.
+  function getC2Zoom() {
     var rt = findRuntime();
-
-    // ── Strategy A: read C2 Gameplay layer scale ──────────────────
-    if (rt) {
-      try {
-        var layout = rt.running_layout;
-        if (layout && layout.layers) {
-          for (var i = 0; i < layout.layers.length; i++) {
-            var l = layout.layers[i];
-            // Try every property name C2 has used across versions
-            var z = l.disp_scale || l.cur_scale || l.layerScale ||
-                    l.zoom || (l.name === 'Gameplay' ? l.scale : null);
-            if (typeof z === 'number' && z > 0.01 && z < 50) {
-              // z = C2 internal zoom.  Still need CSS scale on top.
-              var canvas = getGameCanvas();
-              if (canvas) {
-                var rect = canvas.getBoundingClientRect();
-                var cssScale = Math.min(rect.width / GAME_W, rect.height / GAME_H);
-                return z * cssScale;
-              }
+    if (!rt) return 1;
+    try {
+      // C2 event-sheet variables live on the event_sheets map
+      var sheets = rt.event_sheets;
+      if (sheets) {
+        var keys = Object.keys(sheets);
+        for (var i = 0; i < keys.length; i++) {
+          var sheet = sheets[keys[i]];
+          // globals is an array of variable objects
+          var globals = sheet.globals;
+          if (!globals) continue;
+          for (var j = 0; j < globals.length; j++) {
+            var g = globals[j];
+            if (g && g.name === 'TargetScaleInterpolated' &&
+                typeof g.value === 'number' && g.value > 0) {
+              return g.value;
             }
           }
         }
-      } catch(e){}
-
-      // ── Strategy B: read TargetScaleInterpolated global variable ──
-      try {
-        var sheets = rt.event_sheets || rt.eventsheets || {};
-        var sheetKeys = Object.keys(sheets);
-        for (var si = 0; si < sheetKeys.length; si++) {
-          var sheet = sheets[sheetKeys[si]];
-          var vars = sheet.globals || sheet.variables || sheet.vars || {};
-          var varKeys = Object.keys(vars);
-          for (var vi = 0; vi < varKeys.length; vi++) {
-            var v = vars[varKeys[vi]];
-            if ((v && v.name === 'TargetScaleInterpolated') ||
-                varKeys[vi] === 'TargetScaleInterpolated') {
-              var z2 = (v && typeof v.value === 'number') ? v.value : (typeof v === 'number' ? v : null);
-              if (z2 && z2 > 0.01 && z2 < 50) {
-                var canvas2 = getGameCanvas();
-                if (canvas2) {
-                  var rect2 = canvas2.getBoundingClientRect();
-                  return z2 * Math.min(rect2.width / GAME_W, rect2.height / GAME_H);
-                }
-              }
-            }
-          }
-        }
-      } catch(e){}
-    }
-
-    // ── Strategy C: pure CSS scale only (no zoom info) ────────────
-    var canvas3 = getGameCanvas();
-    if (canvas3) {
-      var rect3 = canvas3.getBoundingClientRect();
-      return Math.min(rect3.width / GAME_W, rect3.height / GAME_H);
-    }
-
-    return Math.min(window.innerWidth / GAME_W, window.innerHeight / GAME_H);
+      }
+    } catch(e) {}
+    return 1; // default: no zoom
   }
 
   function worldToScreen(wx, wy) {
     var me = getRocketPos();
     if (!me) return null;
 
-    var canvas = getGameCanvas();
-    var rect   = canvas ? canvas.getBoundingClientRect() : null;
-    // Centre of the game display in CSS pixels
-    var cx = rect ? rect.left + rect.width  / 2 : window.innerWidth  / 2;
-    var cy = rect ? rect.top  + rect.height / 2 : window.innerHeight / 2;
+    // C2 canvas = full window, game image is scaled+letterboxed INSIDE it
+    var winW = window.innerWidth;
+    var winH = window.innerHeight;
 
-    var ppu = getPPU();
+    // CSS scale: how many CSS pixels per game pixel
+    var cssScale = Math.min(winW / GAME_W, winH / GAME_H);
+
+    // Game-image dimensions in CSS pixels
+    var gameW_px = GAME_W * cssScale;
+    var gameH_px = GAME_H * cssScale;
+
+    // Screen position of the game image's top-left corner
+    // C2 centres horizontally, top-aligns vertically
+    var gameLeft = (winW - gameW_px) / 2;
+    var gameTop  = 0;
+
+    // Screen position of the world-space ORIGIN (top-left of game world)
+    // plus offset for where the camera is pointing
+    // Camera always centres on my rocket, so my rocket maps to game-image centre
+    var zoom  = getC2Zoom();
+    var ppu   = cssScale * zoom;   // pixels per world unit
+
+    // My rocket at world (me.x, me.y) → game-image centre
+    var centerX = gameLeft + gameW_px / 2;
+    var centerY = gameTop  + gameH_px / 2;
 
     return {
-      x: cx + (wx - me.x) * ppu,
-      y: cy + (wy - me.y) * ppu
+      x: centerX + (wx - me.x) * ppu,
+      y: centerY + (wy - me.y) * ppu
     };
   }
+
 
   /* ═══════════════════════════════════════
      LAUNCH / DEATH DETECTION
@@ -520,7 +495,10 @@
     ctx.translate(sx, sy);
     // C2 angle 0 = pointing RIGHT, stored in DEGREES.
     // Our shape points UP, so rotate -90deg then add the C2 angle.
-    ctx.rotate(angleDeg * Math.PI / 180 - Math.PI / 2);
+    // C2 angle: 0=right, 90=down (degrees, clockwise).
+    // Shape is drawn pointing UP (-Y). Rotating by (angleDeg + 90°) makes
+    // it point in the same direction as the C2 object.
+    ctx.rotate((angleDeg + 90) * Math.PI / 180);
 
     var S = 2.5; // scale multiplier — makes it clearly visible
     ctx.shadowColor = color; ctx.shadowBlur = 14;
