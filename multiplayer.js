@@ -100,69 +100,62 @@
     } catch(e){ return null; }
   }
 
-  // Read the C2 camera — tries every known property name across C2 versions
-  function getCameraInfo() {
+  /* ─────────────────────────────────────────────────────────────────
+     worldToScreen  —  converts world coords to canvas pixel coords.
+
+     Strategy: the C2 camera ALWAYS follows the local rocket.
+     So:  screenCenter = myRocket in world space.
+     We only need the DIFFERENCE between target and my rocket,
+     scaled by the game's internal zoom and the CSS display scale.
+     ───────────────────────────────────────────────────────────────── */
+
+  // C2 game resolution (from data.js layout size)
+  var GAME_W = 1920, GAME_H = 1080;
+
+  // Read C2's internal zoom level — tries all known property paths
+  function getInternalZoom() {
     var rt = findRuntime();
-    if (!rt) return null;
-    var layout = rt.running_layout;
-    if (!layout) return null;
-
-    // 1. Layout-level scroll (set by ScrollTo behavior — most reliable)
-    var lx = layout.scrollX !== undefined ? layout.scrollX
-           : layout.scroll_x !== undefined ? layout.scroll_x : null;
-    var ly = layout.scrollY !== undefined ? layout.scrollY
-           : layout.scroll_y !== undefined ? layout.scroll_y : null;
-    var ls = layout.scale !== undefined ? layout.scale : 1;
-    if (lx !== null && ly !== null) return { sx:lx, sy:ly, sc:ls };
-
-    // 2. Walk layers for Gameplay layer
+    if (!rt) return 1;
     try {
-      var layers = layout.layers;
-      if (layers) {
-        for (var pass = 0; pass < 2; pass++) {
-          for (var i = 0; i < layers.length; i++) {
-            var l = layers[i];
-            if (pass === 0 && l.name !== 'Gameplay') continue;
-            var sx = l.scrollX !== undefined ? l.scrollX
-                   : l.scroll_x !== undefined ? l.scroll_x : null;
-            var sy = l.scrollY !== undefined ? l.scrollY
-                   : l.scroll_y !== undefined ? l.scroll_y : null;
-            if (sx !== null && sy !== null) return { sx:sx, sy:sy, sc:l.scale||1 };
-          }
+      // layout-level scale (set when camera zooms in/out)
+      var layout = rt.running_layout;
+      if (layout) {
+        if (typeof layout.scale === 'number' && layout.scale > 0) return layout.scale;
+        if (typeof layout.zoom === 'number' && layout.zoom > 0) return layout.zoom;
+      }
+      // Gameplay layer scale
+      if (layout && layout.layers) {
+        for (var i = 0; i < layout.layers.length; i++) {
+          var l = layout.layers[i];
+          if (l.name === 'Gameplay' && typeof l.scale === 'number' && l.scale > 0) return l.scale;
         }
       }
     } catch(e){}
-
-    // 3. Camera sprite position (has ScrollTo behavior in data.js)
-    try {
-      var camT = rt.types['Camera'];
-      if (camT && camT.instances && camT.instances.length) {
-        var c = camT.instances[0];
-        if (c.x !== undefined) return { sx:c.x, sy:c.y, sc:1 };
-      }
-    } catch(e){}
-    return null;
+    return 1;
   }
 
   function worldToScreen(wx, wy) {
-    var s = getCameraInfo();
-    if (!s) return null;
-    var cw = overlayEl ? overlayEl.width  : window.innerWidth;
-    var ch = overlayEl ? overlayEl.height : window.innerHeight;
-    // In C2, scroll = world coord of the screen CENTER
-    return { x: (wx - s.sx) * s.sc + cw/2,
-             y: (wy - s.sy) * s.sc + ch/2 };
-  }
+    // My rocket's world position = what the camera is centred on
+    var me = getRocketPos();
+    if (!me) return null;
 
-  // One-time debug log so we can verify the values are sensible
-  var _camLogged = false;
-  function maybeDumpCamera() {
-    if (_camLogged) return; _camLogged = true;
-    var s = getCameraInfo(), r = getRocketPos();
-    console.log('[MP] cam:', s, 'rocket:', r);
-    if (s && r) console.log('[MP] -> screen:', worldToScreen(r.x, r.y));
+    var cw  = overlayEl ? overlayEl.width  : window.innerWidth;
+    var ch  = overlayEl ? overlayEl.height : window.innerHeight;
+
+    // CSS scale: how much the game canvas is shrunk/stretched to fill the window
+    var cssScaleX = cw / GAME_W;
+    var cssScaleY = ch / GAME_H;
+    var cssScale  = Math.min(cssScaleX, cssScaleY);   // C2 uses letterbox scaling
+
+    // Combined pixel-per-world-unit
+    var ppu = getInternalZoom() * cssScale;
+
+    // Offset from my rocket in world units → pixel offset from screen centre
+    return {
+      x: cw/2 + (wx - me.x) * ppu,
+      y: ch/2 + (wy - me.y) * ppu
+    };
   }
-  setTimeout(maybeDumpCamera, 4000);
 
   /* ═══════════════════════════════════════
      LAUNCH / DEATH DETECTION
@@ -354,6 +347,7 @@
       raceEnded=true; raceStarted=false;
       endRace();
       refreshPanel();
+      showToast('HOST ENDED THE SESSION');
     }
   }
 
@@ -640,8 +634,9 @@
   window.__rpEndSession = function(){
     if(!isHost) return;
     sendToAll({type:'end_session'});
-    endRace();          // reuse race results screen
+    // Host ends locally
     raceEnded=true; raceStarted=false;
+    endRace();
     refreshPanel();
   };
 
