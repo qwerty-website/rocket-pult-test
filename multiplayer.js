@@ -103,57 +103,103 @@
   /* ─────────────────────────────────────────────────────────────────
      worldToScreen  —  converts world coords to canvas pixel coords.
 
-     Strategy: the C2 camera ALWAYS follows the local rocket.
-     So:  screenCenter = myRocket in world space.
-     We only need the DIFFERENCE between target and my rocket,
-     scaled by the game's internal zoom and the CSS display scale.
+     C2 stores its combined zoom in the Gameplay layer's internal
+     scale value (disp_scale / cur_scale / layerScale — name varies
+     by C2 version).  We try every known name, then fall back to
+     reading the layout's TargetScaleInterpolated global variable,
+     then finally fall back to 1.0.
      ───────────────────────────────────────────────────────────────── */
 
-  // C2 game resolution (from data.js layout size)
+  // C2 layout resolution (from data.js)
   var GAME_W = 1920, GAME_H = 1080;
 
-  // Read C2's internal zoom level — tries all known property paths
-  function getInternalZoom() {
+  // Cache the canvas element so we can read its CSS size
+  var _gameCanvas = null;
+  function getGameCanvas() {
+    if (_gameCanvas) return _gameCanvas;
+    _gameCanvas = document.querySelector('canvas');
+    return _gameCanvas;
+  }
+
+  // Pixel-per-world-unit: combines C2's zoom + CSS stretch in one number.
+  // This is the only number we need for world→screen projection.
+  function getPPU() {
     var rt = findRuntime();
-    if (!rt) return 1;
-    try {
-      // layout-level scale (set when camera zooms in/out)
-      var layout = rt.running_layout;
-      if (layout) {
-        if (typeof layout.scale === 'number' && layout.scale > 0) return layout.scale;
-        if (typeof layout.zoom === 'number' && layout.zoom > 0) return layout.zoom;
-      }
-      // Gameplay layer scale
-      if (layout && layout.layers) {
-        for (var i = 0; i < layout.layers.length; i++) {
-          var l = layout.layers[i];
-          if (l.name === 'Gameplay' && typeof l.scale === 'number' && l.scale > 0) return l.scale;
+
+    // ── Strategy A: read C2 Gameplay layer scale ──────────────────
+    if (rt) {
+      try {
+        var layout = rt.running_layout;
+        if (layout && layout.layers) {
+          for (var i = 0; i < layout.layers.length; i++) {
+            var l = layout.layers[i];
+            // Try every property name C2 has used across versions
+            var z = l.disp_scale || l.cur_scale || l.layerScale ||
+                    l.zoom || (l.name === 'Gameplay' ? l.scale : null);
+            if (typeof z === 'number' && z > 0.01 && z < 50) {
+              // z = C2 internal zoom.  Still need CSS scale on top.
+              var canvas = getGameCanvas();
+              if (canvas) {
+                var rect = canvas.getBoundingClientRect();
+                var cssScale = Math.min(rect.width / GAME_W, rect.height / GAME_H);
+                return z * cssScale;
+              }
+            }
+          }
         }
-      }
-    } catch(e){}
-    return 1;
+      } catch(e){}
+
+      // ── Strategy B: read TargetScaleInterpolated global variable ──
+      try {
+        var sheets = rt.event_sheets || rt.eventsheets || {};
+        var sheetKeys = Object.keys(sheets);
+        for (var si = 0; si < sheetKeys.length; si++) {
+          var sheet = sheets[sheetKeys[si]];
+          var vars = sheet.globals || sheet.variables || sheet.vars || {};
+          var varKeys = Object.keys(vars);
+          for (var vi = 0; vi < varKeys.length; vi++) {
+            var v = vars[varKeys[vi]];
+            if ((v && v.name === 'TargetScaleInterpolated') ||
+                varKeys[vi] === 'TargetScaleInterpolated') {
+              var z2 = (v && typeof v.value === 'number') ? v.value : (typeof v === 'number' ? v : null);
+              if (z2 && z2 > 0.01 && z2 < 50) {
+                var canvas2 = getGameCanvas();
+                if (canvas2) {
+                  var rect2 = canvas2.getBoundingClientRect();
+                  return z2 * Math.min(rect2.width / GAME_W, rect2.height / GAME_H);
+                }
+              }
+            }
+          }
+        }
+      } catch(e){}
+    }
+
+    // ── Strategy C: pure CSS scale only (no zoom info) ────────────
+    var canvas3 = getGameCanvas();
+    if (canvas3) {
+      var rect3 = canvas3.getBoundingClientRect();
+      return Math.min(rect3.width / GAME_W, rect3.height / GAME_H);
+    }
+
+    return Math.min(window.innerWidth / GAME_W, window.innerHeight / GAME_H);
   }
 
   function worldToScreen(wx, wy) {
-    // My rocket's world position = what the camera is centred on
     var me = getRocketPos();
     if (!me) return null;
 
-    var cw  = overlayEl ? overlayEl.width  : window.innerWidth;
-    var ch  = overlayEl ? overlayEl.height : window.innerHeight;
+    var canvas = getGameCanvas();
+    var rect   = canvas ? canvas.getBoundingClientRect() : null;
+    // Centre of the game display in CSS pixels
+    var cx = rect ? rect.left + rect.width  / 2 : window.innerWidth  / 2;
+    var cy = rect ? rect.top  + rect.height / 2 : window.innerHeight / 2;
 
-    // CSS scale: how much the game canvas is shrunk/stretched to fill the window
-    var cssScaleX = cw / GAME_W;
-    var cssScaleY = ch / GAME_H;
-    var cssScale  = Math.min(cssScaleX, cssScaleY);   // C2 uses letterbox scaling
+    var ppu = getPPU();
 
-    // Combined pixel-per-world-unit
-    var ppu = getInternalZoom() * cssScale;
-
-    // Offset from my rocket in world units → pixel offset from screen centre
     return {
-      x: cw/2 + (wx - me.x) * ppu,
-      y: ch/2 + (wy - me.y) * ppu
+      x: cx + (wx - me.x) * ppu,
+      y: cy + (wy - me.y) * ppu
     };
   }
 
@@ -457,16 +503,53 @@
 
   function drawGhost(ctx, sx, sy, angle, color, label){
     ctx.save();
-    ctx.translate(sx,sy); ctx.rotate(angle+Math.PI/2);
-    ctx.strokeStyle=color; ctx.lineWidth=2; ctx.shadowColor=color; ctx.shadowBlur=10;
+    ctx.translate(sx, sy);
+    // C2 rockets point RIGHT at angle=0, so rotate 90° to make them point UP by default
+    ctx.rotate(angle - Math.PI / 2);
+
+    var glow = color;
+
+    // ── body ─────────────────────────────────────────
+    ctx.shadowColor = glow; ctx.shadowBlur = 16;
+
+    // main fuselage (filled rectangle)
+    ctx.fillStyle = color;
+    ctx.fillRect(-5, -18, 10, 28);
+
+    // nose cone (filled triangle)
     ctx.beginPath();
-    ctx.moveTo(0,-10); ctx.lineTo(-5,4); ctx.lineTo(-2,2);
-    ctx.lineTo(-2,8); ctx.lineTo(2,8); ctx.lineTo(2,2); ctx.lineTo(5,4);
-    ctx.closePath(); ctx.stroke(); ctx.restore();
-    ctx.fillStyle=color; ctx.font='bold 9px monospace'; ctx.textAlign='center';
-    ctx.shadowColor=color; ctx.shadowBlur=6;
-    ctx.fillText(label,sx,sy-17);
-    ctx.shadowBlur=0; ctx.textAlign='left';
+    ctx.moveTo(0, -28); ctx.lineTo(-5, -18); ctx.lineTo(5, -18);
+    ctx.closePath(); ctx.fill();
+
+    // fins
+    ctx.beginPath();
+    ctx.moveTo(-5, 6);  ctx.lineTo(-13, 16); ctx.lineTo(-5, 10);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(5, 6);   ctx.lineTo(13, 16);  ctx.lineTo(5, 10);
+    ctx.closePath(); ctx.fill();
+
+    // engine nozzle
+    ctx.fillStyle = '#333';
+    ctx.fillRect(-4, 10, 8, 6);
+
+    // colour stripe
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fillRect(-2, -14, 4, 12);
+
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    // ── name label above rocket ───────────────────────
+    ctx.save();
+    ctx.font        = 'bold 11px monospace';
+    ctx.textAlign   = 'center';
+    ctx.fillStyle   = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur  = 8;
+    ctx.fillText(label, sx, sy - 34);
+    ctx.shadowBlur  = 0;
+    ctx.restore();
   }
 
   function drawMinimap(){
