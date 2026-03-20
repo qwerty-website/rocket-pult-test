@@ -104,45 +104,67 @@
     return null;
   }
 
-  function getC2Zoom() {
+  // Read C2 camera scroll + zoom from event-sheet globals.
+  // C2 controls the camera via TargetScrollX/YInterpolated and
+  // TargetScaleInterpolated variables updated every tick.
+  // These are the ACTUAL values the C2 renderer uses — much more
+  // reliable than trying to read internal layer properties.
+  function getC2Camera() {
     var rt = findRuntime();
-    if (!rt) return 1;
-    try {
-      var sheets = rt.event_sheets;
-      if (sheets) {
-        var keys = Object.keys(sheets);
-        for (var i = 0; i < keys.length; i++) {
-          var g = sheets[keys[i]].globals;
-          if (!g) continue;
-          for (var j = 0; j < g.length; j++) {
-            if (g[j] && g[j].name === "TargetScaleInterpolated" &&
-                typeof g[j].value === "number" && g[j].value > 0) {
-              return g[j].value;
+    var cx = null, cy = null, zoom = null;
+    if (rt) {
+      try {
+        var sheets = rt.event_sheets;
+        if (sheets) {
+          var keys = Object.keys(sheets);
+          for (var i = 0; i < keys.length; i++) {
+            var g = sheets[keys[i]].globals;
+            if (!g) continue;
+            for (var j = 0; j < g.length; j++) {
+              var name = g[j] && g[j].name;
+              var val  = g[j] && g[j].value;
+              if (name === "TargetScrollXInterpolated") cx   = val;
+              if (name === "TargetScrollYInterpolated") cy   = val;
+              if (name === "TargetScaleInterpolated")   zoom = val;
             }
           }
         }
-      }
-    } catch (e) {}
-    return 1;
+      } catch (e) {}
+    }
+    // Fallback: use rocket pos (works when camera tracks rocket tightly)
+    if (cx === null || cy === null) {
+      var r = getRocketPos();
+      if (!r) return null;
+      cx = r.x; cy = r.y;
+    }
+    return { cx: cx, cy: cy, zoom: (zoom && zoom > 0) ? zoom : 1 };
   }
 
   function worldToScreen(wx, wy) {
-    var me = getRocketPos();
-    if (!me) return null;
+    var cam = getC2Camera();
+    if (!cam) return null;
 
     var winW = window.innerWidth;
     var winH = window.innerHeight;
     var cssScale = Math.min(winW / GAME_W, winH / GAME_H);
-    var gameWpx = GAME_W * cssScale;
-    var gameHpx = GAME_H * cssScale;
+    var gameWpx  = GAME_W * cssScale;
+    var gameHpx  = GAME_H * cssScale;
+    // C2 centres the game image in both axes
     var gameLeft = (winW - gameWpx) / 2;
     var gameTop  = (winH - gameHpx) / 2;
 
-    var ppu = cssScale * getC2Zoom();
-    var cx  = gameLeft + gameWpx / 2;
-    var cy  = gameTop  + gameHpx / 2;
+    // pixels per world unit = CSS scale * C2 zoom
+    var ppu = cssScale * cam.zoom;
 
-    return { x: cx + (wx - me.x) * ppu, y: cy + (wy - me.y) * ppu };
+    // Screen pixel of world-space origin (cam.cx, cam.cy) is always the
+    // centre of the game image
+    var screenCX = gameLeft + gameWpx / 2;
+    var screenCY = gameTop  + gameHpx / 2;
+
+    return {
+      x: screenCX + (wx - cam.cx) * ppu,
+      y: screenCY + (wy - cam.cy) * ppu
+    };
   }
 
   /* =============================================
@@ -297,7 +319,7 @@
      NETWORKING
   ============================================= */
   function genCode() {
-    var ch = "ABCDEFGHJKLMNPQRSTUVWXYZ", s = "";
+    var ch = "ABCDEFGHJKLMNPQRSTUVWXY", s = ""; // no Z (slows game), no I/O (look alike)
     for (var i = 0; i < 4; i++) s += ch[Math.floor(Math.random() * ch.length)];
     return s;
   }
