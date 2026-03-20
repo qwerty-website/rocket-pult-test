@@ -45,7 +45,7 @@
   var connections   = {};
   var players       = {};   // never includes self
 
-  var settings      = { mode: 'sandbox', collision: true, timeLimit: 60 };
+  var settings      = { mode: 'sandbox', collision: 'simple', timeLimit: 60 };
 
   var connected         = false;
   var raceStarted       = false;
@@ -160,10 +160,9 @@
     var gameW_px = GAME_W * cssScale;
     var gameH_px = GAME_H * cssScale;
 
-    // Screen position of the game image's top-left corner
-    // C2 centres horizontally, top-aligns vertically
+    // C2 centres the game image both horizontally AND vertically
     var gameLeft = (winW - gameW_px) / 2;
-    var gameTop  = 0;
+    var gameTop  = (winH - gameH_px) / 2;
 
     // Screen position of the world-space ORIGIN (top-left of game world)
     // plus offset for where the camera is pointing
@@ -209,7 +208,7 @@
     if (myLaunched) return;
     myLaunched = true; myDead = false; myCollisionActive = false;
     if (myCollisionTimer) clearTimeout(myCollisionTimer);
-    if (raceStarted && settings.collision) {
+    if (raceStarted && settings.collision !== 'off') {
       myCollisionTimer = setTimeout(function(){
         if (myLaunched && !myDead) { myCollisionActive = true; showToast('💥 COLLISION ON!'); }
       }, COLLISION_DELAY_MS);
@@ -229,36 +228,102 @@
   /* ═══════════════════════════════════════
      COLLISION
   ═══════════════════════════════════════ */
+  /* ─────────────────────────────────────────────
+     COLLISION MODES
+     off    — ghosts only, no interaction
+     simple — random directional bump
+     full   — direction-aware push + sustained
+              repulsion while overlapping
+  ─────────────────────────────────────────────── */
+
+  // Holds the nearest colliding player this tick
+  var _nearestCollider = null;
+
   function checkCollisions() {
-    if (!myCollisionActive || !settings.collision) return;
+    if (!myCollisionActive || settings.collision === 'off') return;
     var me = getRocketPos();
     if (!me) return;
     var now = Date.now();
+    var closest = null, closestDist = Infinity;
+
     var ids = Object.keys(players);
     for (var i=0; i<ids.length; i++) {
       var p = players[ids[i]];
       if (!p || !p.launched || p.dead || now-(p.lastSeen||0)>STALE_MS) continue;
       var dx=me.x-p.x, dy=me.y-p.y;
-      if (Math.sqrt(dx*dx+dy*dy) < COLLISION_RADIUS) {
-        if (now-lastBumpTime > 900) { lastBumpTime=now; doBump(); }
-        return;
+      var dist = Math.sqrt(dx*dx+dy*dy);
+      if (dist < COLLISION_RADIUS && dist < closestDist) {
+        closestDist = dist; closest = { p:p, dx:dx, dy:dy, dist:dist };
       }
+    }
+
+    _nearestCollider = closest;
+
+    if (closest && now-lastBumpTime > 500) {
+      lastBumpTime = now;
+      if (settings.collision === 'simple') doBumpSimple(closest.dx, closest.dy);
+      else if (settings.collision === 'full') doBumpFull(closest.dx, closest.dy, closest.dist);
     }
   }
 
-  function doBump() {
+  function fireKey(keyName, keyCode, ms) {
+    var opts={key:keyName,code:keyName,keyCode:keyCode,which:keyCode,bubbles:true,cancelable:true};
+    var canvas = getGameCanvas();
+    [document, canvas].forEach(function(el){
+      if(!el) return;
+      el.dispatchEvent(new KeyboardEvent('keydown', opts));
+      setTimeout(function(){ el.dispatchEvent(new KeyboardEvent('keyup', opts)); }, ms);
+    });
+  }
+
+  // SIMPLE: random direction bump
+  function doBumpSimple(dx, dy) {
     var keys=[['ArrowUp',38],['ArrowLeft',37],['ArrowRight',39]];
     var k=keys[Math.floor(Math.random()*keys.length)];
-    var opts={key:k[0],code:k[0],keyCode:k[1],which:k[1],bubbles:true,cancelable:true};
-    var canvas=document.querySelector('canvas');
-    [document,canvas].forEach(function(el){
-      if(!el) return;
-      el.dispatchEvent(new KeyboardEvent('keydown',opts));
-      setTimeout(function(){ el.dispatchEvent(new KeyboardEvent('keyup',opts)); },200);
-    });
+    fireKey(k[0], k[1], 180);
+    showHitFlash(); showToast('💥 HIT!');
+  }
+
+  // FULL: direction-aware push — press the key that moves AWAY from other rocket
+  function doBumpFull(dx, dy, dist) {
+    // dx/dy = (me - other), so positive dx = other is to my LEFT
+    // Determine strongest axis and fire appropriate key
+    var absDx = Math.abs(dx), absDy = Math.abs(dy);
+
+    // Overlap amount: closer = stronger (more key presses)
+    var overlap = Math.max(0, COLLISION_RADIUS - dist);
+    var presses = overlap > COLLISION_RADIUS * 0.5 ? 3 : overlap > COLLISION_RADIUS * 0.25 ? 2 : 1;
+    var dur     = overlap > COLLISION_RADIUS * 0.5 ? 300 : 180;
+
+    for (var i = 0; i < presses; i++) {
+      (function(delay){
+        setTimeout(function(){
+          // Push on the dominant axis
+          if (absDx >= absDy) {
+            // Horizontal dominates: push left or right
+            if (dx > 0) fireKey('ArrowRight', 39, dur);  // other is to my left, push right
+            else        fireKey('ArrowLeft',  37, dur);  // other is to my right, push left
+          } else {
+            // Vertical dominates
+            if (dy > 0) fireKey('ArrowUp', 38, dur);     // other is below, push up
+            else {
+              // Other is above — push left or right (no down key in game)
+              fireKey(dx >= 0 ? 'ArrowRight' : 'ArrowLeft', dx >= 0 ? 39 : 37, dur);
+            }
+          }
+        }, delay * 120);
+      })(i);
+    }
+
+    showHitFlash();
+    if (presses >= 3) showToast('💥 STRONG HIT!');
+    else if (presses === 2) showToast('💥 HIT!');
+    else showToast('· glancing blow');
+  }
+
+  function showHitFlash() {
     var fl=document.getElementById('rp-flash');
     if(fl){ fl.style.opacity='0.5'; setTimeout(function(){ fl.style.opacity='0'; },160); }
-    showToast('💥 HIT!');
   }
 
   /* ═══════════════════════════════════════
@@ -636,9 +701,14 @@
           return '<button class="rp-tl-btn'+(settings.timeLimit===t?' active':'')+'" onclick="window.__rpSetTL('+t+')">'+t+'s</button>';
         }).join('')+'</div></div>'
       :'';
-    var colH='<div class="rp-set-row"><span>COLLISION</span>'
-             +'<button class="rp-col-btn'+(settings.collision?' active':'')+'" onclick="window.__rpToggleCol()">'
-             +(settings.collision?'ON ✓':'OFF')+'</button></div>';
+    var colModes=['off','simple','full'];
+    var colH='<div class="rp-set-row"><span>COLLISION</span><div class="rp-tl-group">'
+             +colModes.map(function(m){
+               return '<button class="rp-tl-btn'+(settings.collision===m?' active':'')+'" '
+                     +'onclick="window.__rpSetCol(''+m+'')" '
+                     +'title="'+(m==='off'?'No collision':m==='simple'?'Random bump':'Direction-aware push')+'">'
+                     +m.toUpperCase()+'</button>';
+             }).join('')+'</div></div>';
     return '<div class="rp-settings"><div class="rp-set-row"><span>MODE</span>'
            +'<div class="rp-mode-group">'+modesH+'</div></div>'+tlH+colH+'</div>';
   }
@@ -701,7 +771,7 @@
   window.__rpClose     = function(){ panelOpen=false; var el=document.getElementById('rp-panel'); if(el) el.remove(); };
   window.__rpSetMode   = function(m){ if(!isHost) return; settings.mode=m; sendToAll({type:'settings_update',settings:settings}); refreshPanel(); };
   window.__rpSetTL     = function(t){ if(!isHost) return; settings.timeLimit=t; sendToAll({type:'settings_update',settings:settings}); refreshPanel(); };
-  window.__rpToggleCol = function(){ if(!isHost) return; settings.collision=!settings.collision; sendToAll({type:'settings_update',settings:settings}); refreshPanel(); };
+  window.__rpSetCol = function(m){ if(!isHost) return; settings.collision=m; sendToAll({type:'settings_update',settings:settings}); refreshPanel(); };
   window.__rpEndSession = function(){
     if(!isHost) return;
     sendToAll({type:'end_session'});
