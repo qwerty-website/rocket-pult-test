@@ -704,9 +704,8 @@
     var colModes=['off','simple','full'];
     var colH='<div class="rp-set-row"><span>COLLISION</span><div class="rp-tl-group">'
              +colModes.map(function(m){
-               return '<button class="rp-tl-btn'+(settings.collision===m?' active':'')+'" '
-                     +'onclick="window.__rpSetCol(''+m+'')" '
-                     +'title="'+(m==='off'?'No collision':m==='simple'?'Random bump':'Direction-aware push')+'">'
+               var active=settings.collision===m?' active':'';
+               return '<button class="rp-tl-btn'+active+'" onclick="window.__rpSetCol(\''+m+'\')">'
                      +m.toUpperCase()+'</button>';
              }).join('')+'</div></div>';
     return '<div class="rp-settings"><div class="rp-set-row"><span>MODE</span>'
