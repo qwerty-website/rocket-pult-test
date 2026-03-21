@@ -49,6 +49,7 @@
   var myLastPos         = null;
   var myBestDist        = 0;
   var lastBumpTime      = 0;
+  var myStillSince      = 0;   // timestamp when rocket last had significant movement
 
   var overlayEl  = null;
   var overlayCtx = null;
@@ -154,11 +155,27 @@
   function checkMyState(pos) {
     if (!pos) return;
     var ds = Math.sqrt(Math.pow(pos.x - START_X, 2) + Math.pow(pos.y - START_Y, 2));
+
+    // Death: snapped back near catapult
     if (myLaunched && ds < RESET_THRESH) { onMyDeath(); return; }
-    if (!myLaunched && myLastPos) {
+
+    // Death: rocket not moving for 1.5s while launched (landed/crashed/OOF)
+    if (myLaunched && myLastPos) {
       var mv = Math.sqrt(Math.pow(pos.x - myLastPos.x, 2) + Math.pow(pos.y - myLastPos.y, 2));
-      if (mv > LAUNCH_THRESH && ds > RESET_THRESH) onMyLaunch();
+      if (mv > 1.5) {
+        myStillSince = 0; // reset stillness clock whenever there is movement
+      } else {
+        if (myStillSince === 0) myStillSince = Date.now();
+        else if (Date.now() - myStillSince > 1500) { onMyDeath(); return; }
+      }
     }
+
+    // Launch: moved significantly away from catapult
+    if (!myLaunched && myLastPos) {
+      var mv2 = Math.sqrt(Math.pow(pos.x - myLastPos.x, 2) + Math.pow(pos.y - myLastPos.y, 2));
+      if (mv2 > LAUNCH_THRESH && ds > RESET_THRESH) onMyLaunch();
+    }
+
     if (myLaunched) {
       var d = Math.abs(pos.x - START_X);
       if (d > myBestDist) myBestDist = d;
@@ -168,7 +185,7 @@
 
   function onMyLaunch() {
     if (myLaunched) return;
-    myLaunched = true; myDead = false; myCollisionActive = false;
+    myLaunched = true; myDead = false; myCollisionActive = false; myStillSince = 0;
     if (myCollisionTimer) clearTimeout(myCollisionTimer);
     if (raceStarted && settings.collision !== "off") {
       myCollisionTimer = setTimeout(function () {
@@ -517,32 +534,34 @@
     ctx.translate(sx, sy);
     // C2 angle 0=right, 90=down, clockwise, degrees.
     // Shape points UP (-Y). Subtract 90° to align.
-    ctx.rotate((angleDeg - 90) * Math.PI / 180);
+    // C2: 0=right, 90=down, 270=up. Shape points UP. +90 aligns them.
+    ctx.rotate((angleDeg + 90) * Math.PI / 180);
 
-    ctx.shadowColor = color; ctx.shadowBlur = 10;
+    // 50px tall rocket — clearly visible at any zoom
+    var R = 50;  // half-height in px
+    ctx.shadowColor = color; ctx.shadowBlur = 14;
     ctx.fillStyle = color;
-    // Fixed 22px tall rocket shape
-    ctx.fillRect(-5, -14, 10, 22);          // fuselage
-    ctx.beginPath();                         // nose cone
-    ctx.moveTo(0, -22); ctx.lineTo(-5, -14); ctx.lineTo(5, -14);
+    ctx.fillRect(-R*0.22, -R*0.62, R*0.44, R);           // fuselage
+    ctx.beginPath();                                        // nose cone
+    ctx.moveTo(0, -R); ctx.lineTo(-R*0.22, -R*0.62); ctx.lineTo(R*0.22, -R*0.62);
     ctx.closePath(); ctx.fill();
-    ctx.beginPath();                         // left fin
-    ctx.moveTo(-5, 4); ctx.lineTo(-10, 12); ctx.lineTo(-5, 8);
+    ctx.beginPath();                                        // left fin
+    ctx.moveTo(-R*0.22, R*0.14); ctx.lineTo(-R*0.46, R*0.48); ctx.lineTo(-R*0.22, R*0.34);
     ctx.closePath(); ctx.fill();
-    ctx.beginPath();                         // right fin
-    ctx.moveTo(5, 4); ctx.lineTo(10, 12); ctx.lineTo(5, 8);
+    ctx.beginPath();                                        // right fin
+    ctx.moveTo(R*0.22, R*0.14); ctx.lineTo(R*0.46, R*0.48); ctx.lineTo(R*0.22, R*0.34);
     ctx.closePath(); ctx.fill();
     ctx.fillStyle = "rgba(0,0,0,0.7)";
-    ctx.fillRect(-3, 8, 6, 5);              // nozzle
-    ctx.fillStyle = "rgba(255,255,255,0.5)";
-    ctx.fillRect(-2, -10, 4, 10);           // stripe
+    ctx.fillRect(-R*0.16, R*0.34, R*0.32, R*0.2);         // nozzle
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.fillRect(-R*0.08, -R*0.52, R*0.16, R*0.42);       // stripe
     ctx.shadowBlur = 0; ctx.restore();
 
     // name label above
     ctx.save();
-    ctx.font = "bold 11px monospace"; ctx.textAlign = "center";
-    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 8;
-    ctx.fillText(label, sx, sy - 30);
+    ctx.font = "bold 13px monospace"; ctx.textAlign = "center";
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 10;
+    ctx.fillText(label, sx, sy - R - 8);
     ctx.shadowBlur = 0; ctx.restore();
   }
 
