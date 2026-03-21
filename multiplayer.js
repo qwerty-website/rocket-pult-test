@@ -194,20 +194,25 @@
     updateHUD();
   }
 
-  // Poll C2's ExplosionParticles0 type — if instances exist, an explosion is happening.
-  // Broadcast "explode" once per explosion event so other players see it.
+  // Watch RocketFlightStatusText — C2 sets it to "Too Fast" or "Tipped Over"
+  // ONLY when the real explosion fires (OnRocketTooFast / OnRocketTippedOver events).
+  // Water splash, landing, out-of-fuel etc all use different status strings.
+  var myLastStatus = "";
   function checkMyExplosion() {
     var rt = findRuntime();
     if (!rt) return;
     try {
-      var t = rt.types["ExplosionParticles0"];
-      var active = t && t.instances && t.instances.length > 0;
-      if (active && !myExploding) {
+      var t = rt.types["RocketFlightStatusText"];
+      if (!t || !t.instances || !t.instances.length) return;
+      var statusText = t.instances[0].text || "";
+      var isExploding = (statusText === "Too Fast" || statusText === "Tipped Over");
+      if (isExploding && !myExploding) {
         myExploding = true;
         var pos = getRocketPos();
-        if (pos) broadcast({ type: "explode", x: pos.x, y: pos.y, color: COLORS[myColorIdx] });
+        if (pos) broadcast({ type: "explode", x: pos.x, y: pos.y });
       }
-      if (!active) myExploding = false;
+      if (!isExploding) myExploding = false;
+      myLastStatus = statusText;
     } catch(e) {}
   }
 
@@ -582,9 +587,10 @@
     var rt = findRuntime();
     if (!rt) return;
     try {
-      // Get the Gameplay layer (index 1 in the layout layer list)
       var layout = rt.running_layout;
       if (!layout || !layout.layers) return;
+
+      // Find Gameplay layer — that's where C2 puts explosion particles
       var layer = null;
       for (var i = 0; i < layout.layers.length; i++) {
         if (layout.layers[i].name === "Gameplay") { layer = layout.layers[i]; break; }
@@ -592,25 +598,22 @@
       if (!layer) layer = layout.layers[1] || layout.layers[0];
       if (!layer) return;
 
-      // Spawn all 4 explosion particle types at the world position
+      // Same 4 particle types C2 uses for real explosions
       var types = ["ExplosionParticles0", "ExplosionParticles1",
                    "ExplosionParticles2", "ExplosionParticles3"];
       for (var t = 0; t < types.length; t++) {
-        var typeName = types[t];
-        var typeObj = rt.types[typeName];
+        var typeObj = rt.types[types[t]];
         if (!typeObj) continue;
         var inst = rt.createInstance(typeObj, layer, wx, wy);
-        // Instances are one-shot particles — they self-destroy after emitting
         if (inst) {
-          // Trigger OnCreated so C2 runs any attached events
-          try {
-            rt.isInOnDestroy++;
-            rt.trigger(Object.getPrototypeOf(typeObj.plugin).cnds.OnCreated, inst);
-            rt.isInOnDestroy--;
-          } catch(e) {}
+          // Force position in case createInstance placed it elsewhere
+          inst.x = wx;
+          inst.y = wy;
+          inst.set_bbox_changed();
+          rt.redraw = true;
         }
       }
-    } catch(e) {}
+    } catch(e) { console.warn("[MP] spawnExplosion failed:", e); }
   }
 
   function drawExplosions() { /* no-op: C2 renders real explosions natively */ }
