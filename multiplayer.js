@@ -240,40 +240,22 @@
       hitFlash(); showToast("HIT!");
 
     } else {
-      // Full: elastic reflection — reverse velocity component along normal,
-      // plus position correction so rockets don't overlap
+      // Full: apply an impulse directly to the Box2D body in the
+      // direction away from the other rocket. Strength based on overlap.
+      var overlap = Math.max(4, COLLISION_RADIUS - dist);
+      var strength = 0.5 + overlap * 0.04;  // impulse in Box2D units (1 unit ~= 50px/s)
       var body = getRocketPhysicsBody();
       if (body) {
         try {
-          var vel  = body.GetLinearVelocity();
-          var vx   = vel.get_x(), vy = vel.get_y();      // Box2D units (m/step)
-
-          // Dot product of velocity along collision normal
-          var vDotN = vx * nx + vy * ny;
-
-          // Only resolve if we're moving toward the other rocket
-          if (vDotN < 0) {
-            // Reflect: new velocity = v - 2*(v·n)*n  (elastic bounce, coefficient 0.8)
-            var restitution = 0.8;
-            var newVx = vx - (1 + restitution) * vDotN * nx;
-            var newVy = vy - (1 + restitution) * vDotN * ny;
-            var newVel = new b2Vec2(newVx, newVy);
-            body.SetLinearVelocity(newVel);
-          }
-
-          // Position correction: push my rocket out of overlap
-          var overlap = COLLISION_RADIUS - dist;
-          if (overlap > 0) {
-            var rt = findRuntime();
-            if (rt && rt.types["RocketSprite"] && rt.types["RocketSprite"].instances.length) {
-              var inst = rt.types["RocketSprite"].instances[0];
-              inst.x += nx * overlap * 0.5;
-              inst.y += ny * overlap * 0.5;
-            }
-          }
+          // ApplyLinearImpulse(force_vec, point_vec, wake)
+          // Box2D world scale = 0.02 (worldScale in c2runtime.js)
+          // Impulse vec in Box2D units = direction * strength
+          var tmpA = new b2Vec2(nx * strength, ny * strength);
+          // Apply at body centre
+          var pos = body.GetWorldCenter();
+          body.ApplyLinearImpulse(tmpA, pos, true);
         } catch (e) {
-          // Fallback if b2Vec2 not available
-          doPhysicsImpulse(nx * 10, ny * 10);
+          doPhysicsImpulse(nx * 8, ny * 8);
         }
       } else {
         doPhysicsImpulse(nx * 8, ny * 8);
@@ -395,7 +377,11 @@
     } else if (d.type === "launch") {
       if (players[pid]) { players[pid].launched = true; players[pid].dead = false; }
     } else if (d.type === "death") {
-      if (players[pid]) { players[pid].dead = true; players[pid].launched = false; }
+      if (players[pid]) {
+        // Spawn explosion at last known position before marking dead
+        if (players[pid].x !== undefined) spawnExplosion(players[pid].x, players[pid].y, players[pid].color || "#ff4444");
+        players[pid].dead = true; players[pid].launched = false;
+      }
     } else if (d.type === "welcome") {
       myColorIdx = d.colorIdx; myName = d.name;
       settings = Object.assign(settings, d.settings || {});
@@ -518,43 +504,104 @@
     window.addEventListener("resize", resize); resize();
   }
 
+  // Draws a fixed-screen-size rocket ghost (always 24px tall regardless of zoom)
   function drawGhost(ctx, sx, sy, angleDeg, color, label) {
-    // glow dot — always visible
+    // glow dot — always visible even if off-screen-edge
     ctx.save();
-    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 20;
-    ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 18;
+    ctx.beginPath(); ctx.arc(sx, sy, 5, 0, Math.PI * 2); ctx.fill();
     ctx.shadowBlur = 0; ctx.restore();
 
-    // rocket body
+    // rocket body — FIXED pixel size, independent of world scale
     ctx.save();
     ctx.translate(sx, sy);
-    // angleDeg 0=right in C2; shape points UP; rotate +90deg to align
-    ctx.rotate((angleDeg + 90) * Math.PI / 180);
-    var S = 2.5;
-    ctx.shadowColor = color; ctx.shadowBlur = 14;
+    // C2 angle 0=right, 90=down, clockwise, degrees.
+    // Shape points UP (-Y). Subtract 90° to align.
+    ctx.rotate((angleDeg - 90) * Math.PI / 180);
+
+    ctx.shadowColor = color; ctx.shadowBlur = 10;
     ctx.fillStyle = color;
-    ctx.fillRect(-5 * S, -18 * S, 10 * S, 28 * S);          // fuselage
-    ctx.beginPath(); ctx.moveTo(0, -28 * S);                  // nose
-    ctx.lineTo(-5 * S, -18 * S); ctx.lineTo(5 * S, -18 * S);
+    // Fixed 22px tall rocket shape
+    ctx.fillRect(-5, -14, 10, 22);          // fuselage
+    ctx.beginPath();                         // nose cone
+    ctx.moveTo(0, -22); ctx.lineTo(-5, -14); ctx.lineTo(5, -14);
     ctx.closePath(); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(-5 * S, 6 * S);               // left fin
-    ctx.lineTo(-13 * S, 16 * S); ctx.lineTo(-5 * S, 10 * S);
+    ctx.beginPath();                         // left fin
+    ctx.moveTo(-5, 4); ctx.lineTo(-10, 12); ctx.lineTo(-5, 8);
     ctx.closePath(); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(5 * S, 6 * S);                // right fin
-    ctx.lineTo(13 * S, 16 * S); ctx.lineTo(5 * S, 10 * S);
+    ctx.beginPath();                         // right fin
+    ctx.moveTo(5, 4); ctx.lineTo(10, 12); ctx.lineTo(5, 8);
     ctx.closePath(); ctx.fill();
-    ctx.fillStyle = "rgba(0,0,0,0.75)";
-    ctx.fillRect(-4 * S, 10 * S, 8 * S, 6 * S);              // nozzle
-    ctx.fillStyle = "rgba(255,255,255,0.55)";
-    ctx.fillRect(-2 * S, -14 * S, 4 * S, 12 * S);            // stripe
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.fillRect(-3, 8, 6, 5);              // nozzle
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.fillRect(-2, -10, 4, 10);           // stripe
     ctx.shadowBlur = 0; ctx.restore();
 
-    // label
+    // name label above
     ctx.save();
-    ctx.font = "bold 13px monospace"; ctx.textAlign = "center";
-    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 10;
-    ctx.fillText(label, sx, sy - 56);
+    ctx.font = "bold 11px monospace"; ctx.textAlign = "center";
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 8;
+    ctx.fillText(label, sx, sy - 30);
     ctx.shadowBlur = 0; ctx.restore();
+  }
+
+  // Explosion particle system for remote player deaths
+  var explosions = []; // { x, y, color, t, maxT }
+
+  function spawnExplosion(wx, wy, color) {
+    var sp = worldToScreen(wx, wy);
+    if (!sp) return;
+    explosions.push({ wx: wx, wy: wy, color: color, t: 0, maxT: 45 });
+  }
+
+  function drawExplosions() {
+    if (!overlayCtx || explosions.length === 0) return;
+    var ctx = overlayCtx;
+    var alive = [];
+    for (var i = 0; i < explosions.length; i++) {
+      var e = explosions[i];
+      e.t++;
+      var sp = worldToScreen(e.wx, e.wy);
+      if (!sp) { alive.push(e); continue; }
+      var progress = e.t / e.maxT;           // 0→1
+      if (progress >= 1) continue;           // expired, drop it
+      alive.push(e);
+
+      var alpha  = 1 - progress;
+      var radius = 10 + progress * 60;
+
+      // outer ring
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,180,0," + alpha + ")";
+      ctx.lineWidth   = 3 * (1 - progress);
+      ctx.shadowColor = "rgba(255,100,0," + alpha + ")";
+      ctx.shadowBlur  = 20;
+      ctx.beginPath(); ctx.arc(sp.x, sp.y, radius, 0, Math.PI * 2); ctx.stroke();
+
+      // inner flash
+      if (progress < 0.3) {
+        ctx.fillStyle = "rgba(255,255,200," + (1 - progress / 0.3) * 0.8 + ")";
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, radius * 0.4, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // 8 spark lines
+      ctx.strokeStyle = e.color;
+      ctx.lineWidth   = 2;
+      ctx.shadowBlur  = 8;
+      for (var s = 0; s < 8; s++) {
+        var ang  = (s / 8) * Math.PI * 2;
+        var len  = progress * 50;
+        ctx.beginPath();
+        ctx.moveTo(sp.x + Math.cos(ang) * radius * 0.3,
+                   sp.y + Math.sin(ang) * radius * 0.3);
+        ctx.lineTo(sp.x + Math.cos(ang) * (radius * 0.3 + len),
+                   sp.y + Math.sin(ang) * (radius * 0.3 + len));
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0; ctx.restore();
+    }
+    explosions = alive;
   }
 
   function drawMinimap() {
@@ -594,11 +641,18 @@
     Object.keys(players).forEach(function (id) {
       var p = players[id];
       if (!p || now - (p.lastSeen || 0) > STALE_MS) return;
+
+      // Dead players: show explosion, then nothing
+      if (p.dead) return; // explosion already spawned on death message
+
       var sp = worldToScreen(p.x, p.y);
       if (!sp) return;
       if (sp.x < -260 || sp.x > overlayEl.width + 260 || sp.y < -260 || sp.y > overlayEl.height + 260) return;
+
       drawGhost(overlayCtx, sp.x, sp.y, p.angle || 0, p.color, p.name || "?");
-      if (myCollisionActive && p.launched && !p.dead) {
+
+      // Collision proximity ring (only when collision active and not off)
+      if (myCollisionActive && p.launched && settings.collision !== "off") {
         var me = getRocketPos();
         if (me) {
           var dx = me.x - p.x, dy = me.y - p.y;
@@ -613,6 +667,7 @@
         }
       }
     });
+    drawExplosions();
     drawMinimap();
   }
 
