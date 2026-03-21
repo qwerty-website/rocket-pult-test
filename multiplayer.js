@@ -104,62 +104,43 @@
     return null;
   }
 
-  // Read C2 camera scroll + zoom from event-sheet globals.
-  // C2 controls the camera via TargetScrollX/YInterpolated and
-  // TargetScaleInterpolated variables updated every tick.
-  // These are the ACTUAL values the C2 renderer uses — much more
-  // reliable than trying to read internal layer properties.
+  // World-to-screen using C2's actual internal camera properties.
+  // From C2 source: running_layout.scrollX/Y = world coord of screen centre,
+  // running_layout.scale = C2 zoom, runtime.aspect_scale = window resize scale.
+  // These are set directly by the ScrollTo behavior every tick.
   function getC2Camera() {
     var rt = findRuntime();
-    var cx = null, cy = null, zoom = null;
-    if (rt) {
-      try {
-        var sheets = rt.event_sheets;
-        if (sheets) {
-          var keys = Object.keys(sheets);
-          for (var i = 0; i < keys.length; i++) {
-            var g = sheets[keys[i]].globals;
-            if (!g) continue;
-            for (var j = 0; j < g.length; j++) {
-              var name = g[j] && g[j].name;
-              var val  = g[j] && g[j].value;
-              if (name === "TargetScrollXInterpolated") cx   = val;
-              if (name === "TargetScrollYInterpolated") cy   = val;
-              if (name === "TargetScaleInterpolated")   zoom = val;
-            }
-          }
-        }
-      } catch (e) {}
-    }
-    // Fallback: use rocket pos (works when camera tracks rocket tightly)
-    if (cx === null || cy === null) {
-      var r = getRocketPos();
-      if (!r) return null;
-      cx = r.x; cy = r.y;
-    }
-    return { cx: cx, cy: cy, zoom: (zoom && zoom > 0) ? zoom : 1 };
+    if (!rt || !rt.running_layout) return null;
+    var layout = rt.running_layout;
+    try {
+      var cx   = typeof layout.scrollX === "number" ? layout.scrollX : null;
+      var cy   = typeof layout.scrollY === "number" ? layout.scrollY : null;
+      var zoom = typeof layout.scale   === "number" ? layout.scale   : 1;
+      var aspect = (rt.aspect_scale && rt.aspect_scale > 0) ? rt.aspect_scale : 1;
+      if (cx === null) return null;
+      return { cx: cx, cy: cy, zoom: zoom, aspect: aspect,
+               drawW: rt.draw_width || GAME_W, drawH: rt.draw_height || GAME_H };
+    } catch (e) {}
+    return null;
   }
 
   function worldToScreen(wx, wy) {
     var cam = getC2Camera();
     if (!cam) return null;
 
-    var winW = window.innerWidth;
-    var winH = window.innerHeight;
-    var cssScale = Math.min(winW / GAME_W, winH / GAME_H);
-    var gameWpx  = GAME_W * cssScale;
-    var gameHpx  = GAME_H * cssScale;
-    // C2 centres the game image in both axes
-    var gameLeft = (winW - gameWpx) / 2;
-    var gameTop  = (winH - gameHpx) / 2;
+    // ppu (canvas pixels per world unit) = zoom * aspect_scale
+    var ppuCanvas = cam.zoom * cam.aspect;
 
-    // pixels per world unit = CSS scale * C2 zoom
-    var ppu = cssScale * cam.zoom;
+    // CSS pixels per canvas pixel (canvas may be stretched to fill window)
+    var canvas = getGameCanvas();
+    var cssPerCanvas = canvas ? (canvas.getBoundingClientRect().width / cam.drawW) : 1;
 
-    // Screen pixel of world-space origin (cam.cx, cam.cy) is always the
-    // centre of the game image
-    var screenCX = gameLeft + gameWpx / 2;
-    var screenCY = gameTop  + gameHpx / 2;
+    var ppu = ppuCanvas * cssPerCanvas;
+
+    // Screen-space centre of the game canvas
+    var rect = canvas ? canvas.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    var screenCX = rect.left + rect.width  / 2;
+    var screenCY = rect.top  + rect.height / 2;
 
     return {
       x: screenCX + (wx - cam.cx) * ppu,
@@ -209,24 +190,109 @@
   /* =============================================
      COLLISION
   ============================================= */
+  // Get the Box2D physics body from the rocket's Physics behavior instance.
+  // C2 stores behavior instances on inst.behavior_insts[].body
+  function getRocketPhysicsBody() {
+    var rt = findRuntime();
+    if (!rt) return null;
+    try {
+      var t = rt.types["RocketSprite"];
+      if (!t || !t.instances || !t.instances.length) return null;
+      var inst = t.instances[0];
+      if (!inst.behavior_insts) return null;
+      for (var i = 0; i < inst.behavior_insts.length; i++) {
+        var b = inst.behavior_insts[i];
+        if (b && b.body) return b.body;
+      }
+    } catch (e) {}
+    return null;
+  }
+
   function checkCollisions() {
     if (!myCollisionActive || settings.collision === "off") return;
     var me = getRocketPos();
     if (!me) return;
     var now = Date.now();
-    var best = null, bestDist = Infinity;
     var ids = Object.keys(players);
     for (var i = 0; i < ids.length; i++) {
       var p = players[ids[i]];
       if (!p || !p.launched || p.dead || now - (p.lastSeen || 0) > STALE_MS) continue;
       var dx = me.x - p.x, dy = me.y - p.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < COLLISION_RADIUS && dist < bestDist) { bestDist = dist; best = { dx: dx, dy: dy, dist: dist }; }
+      if (dist < COLLISION_RADIUS) {
+        resolveCollision(dx, dy, dist);
+        return;
+      }
     }
-    if (best && now - lastBumpTime > 500) {
-      lastBumpTime = now;
-      if (settings.collision === "simple") doBumpSimple();
-      else doBumpFull(best.dx, best.dy, best.dist);
+  }
+
+  // C2 Box2D worldScale = 0.02 (pixels to meters)
+  var BOX2D_SCALE = 0.02;
+
+  function resolveCollision(dx, dy, dist) {
+    // Collision normal: unit vector pointing FROM other rocket TO me
+    var len = dist < 0.001 ? 1 : dist;
+    var nx = dx / len, ny = dy / len;
+
+    if (settings.collision === "simple") {
+      // Simple: fixed-strength impulse along the normal
+      doPhysicsImpulse(nx * 8, ny * 8);
+      hitFlash(); showToast("HIT!");
+
+    } else {
+      // Full: elastic reflection — reverse velocity component along normal,
+      // plus position correction so rockets don't overlap
+      var body = getRocketPhysicsBody();
+      if (body) {
+        try {
+          var vel  = body.GetLinearVelocity();
+          var vx   = vel.get_x(), vy = vel.get_y();      // Box2D units (m/step)
+
+          // Dot product of velocity along collision normal
+          var vDotN = vx * nx + vy * ny;
+
+          // Only resolve if we're moving toward the other rocket
+          if (vDotN < 0) {
+            // Reflect: new velocity = v - 2*(v·n)*n  (elastic bounce, coefficient 0.8)
+            var restitution = 0.8;
+            var newVx = vx - (1 + restitution) * vDotN * nx;
+            var newVy = vy - (1 + restitution) * vDotN * ny;
+            var newVel = new b2Vec2(newVx, newVy);
+            body.SetLinearVelocity(newVel);
+          }
+
+          // Position correction: push my rocket out of overlap
+          var overlap = COLLISION_RADIUS - dist;
+          if (overlap > 0) {
+            var rt = findRuntime();
+            if (rt && rt.types["RocketSprite"] && rt.types["RocketSprite"].instances.length) {
+              var inst = rt.types["RocketSprite"].instances[0];
+              inst.x += nx * overlap * 0.5;
+              inst.y += ny * overlap * 0.5;
+            }
+          }
+        } catch (e) {
+          // Fallback if b2Vec2 not available
+          doPhysicsImpulse(nx * 10, ny * 10);
+        }
+      } else {
+        doPhysicsImpulse(nx * 8, ny * 8);
+      }
+      hitFlash();
+      showToast("COLLISION!");
+    }
+  }
+
+  // Apply impulse via keyboard shortcuts (fallback / simple mode)
+  function doPhysicsImpulse(ix, iy) {
+    // Convert impulse direction to the closest key press
+    var absX = Math.abs(ix), absY = Math.abs(iy);
+    if (absY > absX && iy < 0) {
+      pressKey("ArrowUp", 38, 220);
+    } else if (ix > 0) {
+      pressKey("ArrowRight", 39, 220);
+    } else {
+      pressKey("ArrowLeft", 37, 220);
     }
   }
 
@@ -238,34 +304,6 @@
       el.dispatchEvent(new KeyboardEvent("keydown", opts));
       setTimeout(function () { el.dispatchEvent(new KeyboardEvent("keyup", opts)); }, ms);
     });
-  }
-
-  function doBumpSimple() {
-    var keys = [["ArrowUp", 38], ["ArrowLeft", 37], ["ArrowRight", 39]];
-    var k = keys[Math.floor(Math.random() * keys.length)];
-    pressKey(k[0], k[1], 180);
-    hitFlash(); showToast("HIT!");
-  }
-
-  function doBumpFull(dx, dy, dist) {
-    var overlap  = Math.max(0, COLLISION_RADIUS - dist);
-    var presses  = overlap > COLLISION_RADIUS * 0.5 ? 3 : overlap > COLLISION_RADIUS * 0.25 ? 2 : 1;
-    var dur      = overlap > COLLISION_RADIUS * 0.5 ? 300 : 180;
-    var absDx    = Math.abs(dx), absDy = Math.abs(dy);
-    for (var i = 0; i < presses; i++) {
-      (function (delay) {
-        setTimeout(function () {
-          if (absDx >= absDy) {
-            pressKey(dx > 0 ? "ArrowRight" : "ArrowLeft", dx > 0 ? 39 : 37, dur);
-          } else {
-            if (dy > 0) pressKey("ArrowUp", 38, dur);
-            else pressKey(dx >= 0 ? "ArrowRight" : "ArrowLeft", dx >= 0 ? 39 : 37, dur);
-          }
-        }, delay * 120);
-      })(i);
-    }
-    hitFlash();
-    showToast(presses >= 3 ? "STRONG HIT!" : presses === 2 ? "HIT!" : "glancing blow");
   }
 
   function hitFlash() {
