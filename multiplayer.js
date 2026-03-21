@@ -50,6 +50,7 @@
   var myBestDist        = 0;
   var lastBumpTime      = 0;
   var myStillSince      = 0;   // timestamp when rocket last had significant movement
+  var myExploding       = false; // true while C2 explosion particles are active
 
   var overlayEl  = null;
   var overlayCtx = null;
@@ -202,6 +203,23 @@
     myLastPos = null;
     broadcast({ type: "death" });
     updateHUD();
+  }
+
+  // Poll C2's ExplosionParticles0 type — if instances exist, an explosion is happening.
+  // Broadcast "explode" once per explosion event so other players see it.
+  function checkMyExplosion() {
+    var rt = findRuntime();
+    if (!rt) return;
+    try {
+      var t = rt.types["ExplosionParticles0"];
+      var active = t && t.instances && t.instances.length > 0;
+      if (active && !myExploding) {
+        myExploding = true;
+        var pos = getRocketPos();
+        if (pos) broadcast({ type: "explode", x: pos.x, y: pos.y, color: COLORS[myColorIdx] });
+      }
+      if (!active) myExploding = false;
+    } catch(e) {}
   }
 
   /* =============================================
@@ -395,10 +413,12 @@
       if (players[pid]) { players[pid].launched = true; players[pid].dead = false; }
     } else if (d.type === "death") {
       if (players[pid]) {
-        // Spawn explosion at last known position before marking dead
-        if (players[pid].x !== undefined) spawnExplosion(players[pid].x, players[pid].y, players[pid].color || "#ff4444");
         players[pid].dead = true; players[pid].launched = false;
       }
+    } else if (d.type === "explode") {
+      // Another player's rocket just exploded — show it at the broadcast position
+      spawnExplosion(d.x, d.y, d.color || "#ff4444");
+      if (players[pid]) { players[pid].dead = true; players[pid].launched = false; }
     } else if (d.type === "welcome") {
       myColorIdx = d.colorIdx; myName = d.name;
       settings = Object.assign(settings, d.settings || {});
@@ -493,6 +513,7 @@
                     launched: myLaunched, dead: myDead, bestDist: myBestDist });
       }
       checkCollisions();
+      checkMyExplosion();
       drawOverlay();
     }, 1000 / BROADCAST_HZ);
   }
@@ -534,11 +555,12 @@
     ctx.translate(sx, sy);
     // C2 angle 0=right, 90=down, clockwise, degrees.
     // Shape points UP (-Y). Subtract 90° to align.
-    // C2: 0=right, 90=down, 270=up. Shape points UP. +90 aligns them.
-    ctx.rotate((angleDeg + 90) * Math.PI / 180);
+    // inst.angle is in RADIANS (directly from Box2D body.GetAngle()).
+    // Shape points UP (-Y). Adding PI/2 aligns it: 0rad(right)+PI/2 = shape points right ✓
+    ctx.rotate(angleDeg + Math.PI / 2);  // angleDeg is actually radians
 
-    // 50px tall rocket — clearly visible at any zoom
-    var R = 50;  // half-height in px
+    // 80px half-height rocket — clearly visible
+    var R = 80;
     ctx.shadowColor = color; ctx.shadowBlur = 14;
     ctx.fillStyle = color;
     ctx.fillRect(-R*0.22, -R*0.62, R*0.44, R);           // fuselage
