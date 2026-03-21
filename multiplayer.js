@@ -157,24 +157,13 @@
     if (!pos) return;
     var ds = Math.sqrt(Math.pow(pos.x - START_X, 2) + Math.pow(pos.y - START_Y, 2));
 
-    // Death: snapped back near catapult
+    // Death: rocket snapped back near catapult (player pressed reset)
     if (myLaunched && ds < RESET_THRESH) { onMyDeath(); return; }
-
-    // Death: rocket not moving for 1.5s while launched (landed/crashed/OOF)
-    if (myLaunched && myLastPos) {
-      var mv = Math.sqrt(Math.pow(pos.x - myLastPos.x, 2) + Math.pow(pos.y - myLastPos.y, 2));
-      if (mv > 1.5) {
-        myStillSince = 0; // reset stillness clock whenever there is movement
-      } else {
-        if (myStillSince === 0) myStillSince = Date.now();
-        else if (Date.now() - myStillSince > 1500) { onMyDeath(); return; }
-      }
-    }
 
     // Launch: moved significantly away from catapult
     if (!myLaunched && myLastPos) {
-      var mv2 = Math.sqrt(Math.pow(pos.x - myLastPos.x, 2) + Math.pow(pos.y - myLastPos.y, 2));
-      if (mv2 > LAUNCH_THRESH && ds > RESET_THRESH) onMyLaunch();
+      var mv = Math.sqrt(Math.pow(pos.x - myLastPos.x, 2) + Math.pow(pos.y - myLastPos.y, 2));
+      if (mv > LAUNCH_THRESH && ds > RESET_THRESH) onMyLaunch();
     }
 
     if (myLaunched) {
@@ -587,63 +576,44 @@
     ctx.shadowBlur = 0; ctx.restore();
   }
 
-  // Explosion particle system for remote player deaths
-  var explosions = []; // { x, y, color, t, maxT }
+  // Spawn C2's real explosion particles at a world position.
+  // Uses the same 4 particle types the game uses for the local player.
+  function spawnExplosion(wx, wy) {
+    var rt = findRuntime();
+    if (!rt) return;
+    try {
+      // Get the Gameplay layer (index 1 in the layout layer list)
+      var layout = rt.running_layout;
+      if (!layout || !layout.layers) return;
+      var layer = null;
+      for (var i = 0; i < layout.layers.length; i++) {
+        if (layout.layers[i].name === "Gameplay") { layer = layout.layers[i]; break; }
+      }
+      if (!layer) layer = layout.layers[1] || layout.layers[0];
+      if (!layer) return;
 
-  function spawnExplosion(wx, wy, color) {
-    var sp = worldToScreen(wx, wy);
-    if (!sp) return;
-    explosions.push({ wx: wx, wy: wy, color: color, t: 0, maxT: 45 });
+      // Spawn all 4 explosion particle types at the world position
+      var types = ["ExplosionParticles0", "ExplosionParticles1",
+                   "ExplosionParticles2", "ExplosionParticles3"];
+      for (var t = 0; t < types.length; t++) {
+        var typeName = types[t];
+        var typeObj = rt.types[typeName];
+        if (!typeObj) continue;
+        var inst = rt.createInstance(typeObj, layer, wx, wy);
+        // Instances are one-shot particles — they self-destroy after emitting
+        if (inst) {
+          // Trigger OnCreated so C2 runs any attached events
+          try {
+            rt.isInOnDestroy++;
+            rt.trigger(Object.getPrototypeOf(typeObj.plugin).cnds.OnCreated, inst);
+            rt.isInOnDestroy--;
+          } catch(e) {}
+        }
+      }
+    } catch(e) {}
   }
 
-  function drawExplosions() {
-    if (!overlayCtx || explosions.length === 0) return;
-    var ctx = overlayCtx;
-    var alive = [];
-    for (var i = 0; i < explosions.length; i++) {
-      var e = explosions[i];
-      e.t++;
-      var sp = worldToScreen(e.wx, e.wy);
-      if (!sp) { alive.push(e); continue; }
-      var progress = e.t / e.maxT;           // 0→1
-      if (progress >= 1) continue;           // expired, drop it
-      alive.push(e);
-
-      var alpha  = 1 - progress;
-      var radius = 10 + progress * 60;
-
-      // outer ring
-      ctx.save();
-      ctx.strokeStyle = "rgba(255,180,0," + alpha + ")";
-      ctx.lineWidth   = 3 * (1 - progress);
-      ctx.shadowColor = "rgba(255,100,0," + alpha + ")";
-      ctx.shadowBlur  = 20;
-      ctx.beginPath(); ctx.arc(sp.x, sp.y, radius, 0, Math.PI * 2); ctx.stroke();
-
-      // inner flash
-      if (progress < 0.3) {
-        ctx.fillStyle = "rgba(255,255,200," + (1 - progress / 0.3) * 0.8 + ")";
-        ctx.beginPath(); ctx.arc(sp.x, sp.y, radius * 0.4, 0, Math.PI * 2); ctx.fill();
-      }
-
-      // 8 spark lines
-      ctx.strokeStyle = e.color;
-      ctx.lineWidth   = 2;
-      ctx.shadowBlur  = 8;
-      for (var s = 0; s < 8; s++) {
-        var ang  = (s / 8) * Math.PI * 2;
-        var len  = progress * 50;
-        ctx.beginPath();
-        ctx.moveTo(sp.x + Math.cos(ang) * radius * 0.3,
-                   sp.y + Math.sin(ang) * radius * 0.3);
-        ctx.lineTo(sp.x + Math.cos(ang) * (radius * 0.3 + len),
-                   sp.y + Math.sin(ang) * (radius * 0.3 + len));
-        ctx.stroke();
-      }
-      ctx.shadowBlur = 0; ctx.restore();
-    }
-    explosions = alive;
-  }
+  function drawExplosions() { /* no-op: C2 renders real explosions natively */ }
 
   function drawMinimap() {
     if (!overlayCtx) return;
@@ -708,7 +678,6 @@
         }
       }
     });
-    drawExplosions();
     drawMinimap();
   }
 
