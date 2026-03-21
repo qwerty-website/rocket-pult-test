@@ -401,6 +401,7 @@
       p.bestDist = Math.max(p.bestDist || 0, d.bestDist || 0);
       p.launched = d.launched; p.dead = d.dead;
       p.lastSeen = Date.now();
+      if (d.launched) p.exploding = false;  // clear on relaunch
       if (isHost) sendToAll(d, senderId);
 
     } else if (d.type === "launch") {
@@ -410,9 +411,8 @@
         players[pid].dead = true; players[pid].launched = false;
       }
     } else if (d.type === "explode") {
-      // Another player's rocket just exploded — show it at the broadcast position
-      spawnExplosion(d.x, d.y, d.color || "#ff4444");
-      if (players[pid]) { players[pid].dead = true; players[pid].launched = false; }
+      spawnExplosion(d.x, d.y);
+      if (players[pid]) { players[pid].exploding = true; players[pid].dead = true; players[pid].launched = false; }
     } else if (d.type === "welcome") {
       myColorIdx = d.colorIdx; myName = d.name;
       settings = Object.assign(settings, d.settings || {});
@@ -536,87 +536,145 @@
     window.addEventListener("resize", resize); resize();
   }
 
-  // Draws a fixed-screen-size rocket ghost (always 24px tall regardless of zoom)
-  function drawGhost(ctx, sx, sy, angleDeg, color, label) {
-    // glow dot — always visible even if off-screen-edge
+  // Ghost rocket matching actual single-player sprite.
+  // Body: gray #424242, stripe: pink #E91E63, nose: dark #212121
+  // Outer fins are drawn in the player's color (different from the inner body).
+  function drawGhost(ctx, sx, sy, angleRad, color, label) {
+    // Glow dot — always visible position indicator
     ctx.save();
-    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 18;
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 14;
     ctx.beginPath(); ctx.arc(sx, sy, 5, 0, Math.PI * 2); ctx.fill();
     ctx.shadowBlur = 0; ctx.restore();
 
-    // rocket body — FIXED pixel size, independent of world scale
+    // Rocket body
     ctx.save();
     ctx.translate(sx, sy);
-    // C2 angle 0=right, 90=down, clockwise, degrees.
-    // Shape points UP (-Y). Subtract 90° to align.
-    // inst.angle is in RADIANS (directly from Box2D body.GetAngle()).
-    // Shape points UP (-Y). Adding PI/2 aligns it: 0rad(right)+PI/2 = shape points right ✓
-    ctx.rotate(angleDeg + Math.PI / 2);  // angleDeg is actually radians
+    // angleRad is radians from Box2D (0=right). Shape points UP. +PI/2 aligns.
+    ctx.rotate(angleRad + Math.PI / 2);
 
-    // 80px half-height rocket — clearly visible
-    var R = 80;
-    ctx.shadowColor = color; ctx.shadowBlur = 14;
+    var L = 30;  // half-length px
+    var W = 10;  // half-width px
+
+    // Gray fuselage
+    ctx.fillStyle = "#424242";
+    ctx.fillRect(-W, -L * 0.4, W * 2, L * 0.95);
+
+    // Dark nose tip
+    ctx.fillStyle = "#212121";
+    ctx.beginPath();
+    ctx.moveTo(-W, L * 0.55); ctx.lineTo(0, L); ctx.lineTo(W, L * 0.55);
+    ctx.closePath(); ctx.fill();
+
+    // Pink stripe — matches the actual sprite color
+    ctx.fillStyle = "#E91E63";
+    ctx.fillRect(-W, -L * 0.45, W * 2, L * 0.35);
+
+    // Inner fins (gray — part of body)
+    ctx.fillStyle = "#424242";
+    ctx.beginPath();
+    ctx.moveTo(-W, -L * 0.1); ctx.lineTo(-W * 1.6, -L * 0.55); ctx.lineTo(-W, -L * 0.38);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(W, -L * 0.1); ctx.lineTo(W * 1.6, -L * 0.55); ctx.lineTo(W, -L * 0.38);
+    ctx.closePath(); ctx.fill();
+
+    // Outer fins — player color (the different-color fins the user requested)
     ctx.fillStyle = color;
-    ctx.fillRect(-R*0.22, -R*0.62, R*0.44, R);           // fuselage
-    ctx.beginPath();                                        // nose cone
-    ctx.moveTo(0, -R); ctx.lineTo(-R*0.22, -R*0.62); ctx.lineTo(R*0.22, -R*0.62);
+    ctx.beginPath();
+    ctx.moveTo(-W, -L * 0.22); ctx.lineTo(-W * 2.4, -L * 0.7); ctx.lineTo(-W, -L * 0.52);
     ctx.closePath(); ctx.fill();
-    ctx.beginPath();                                        // left fin
-    ctx.moveTo(-R*0.22, R*0.14); ctx.lineTo(-R*0.46, R*0.48); ctx.lineTo(-R*0.22, R*0.34);
+    ctx.beginPath();
+    ctx.moveTo(W, -L * 0.22); ctx.lineTo(W * 2.4, -L * 0.7); ctx.lineTo(W, -L * 0.52);
     ctx.closePath(); ctx.fill();
-    ctx.beginPath();                                        // right fin
-    ctx.moveTo(R*0.22, R*0.14); ctx.lineTo(R*0.46, R*0.48); ctx.lineTo(R*0.22, R*0.34);
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle = "rgba(0,0,0,0.7)";
-    ctx.fillRect(-R*0.16, R*0.34, R*0.32, R*0.2);         // nozzle
-    ctx.fillStyle = "rgba(255,255,255,0.55)";
-    ctx.fillRect(-R*0.08, -R*0.52, R*0.16, R*0.42);       // stripe
-    ctx.shadowBlur = 0; ctx.restore();
 
-    // name label above
+    // Nozzle
+    ctx.fillStyle = "#111";
+    ctx.fillRect(-W * 0.6, -L * 0.42, W * 1.2, L * 0.14);
+
+    ctx.restore();
+
+    // Name label
     ctx.save();
-    ctx.font = "bold 13px monospace"; ctx.textAlign = "center";
-    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 10;
-    ctx.fillText(label, sx, sy - R - 8);
+    ctx.font = "bold 12px monospace"; ctx.textAlign = "center";
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 8;
+    ctx.fillText(label, sx, sy - L - 14);
     ctx.shadowBlur = 0; ctx.restore();
   }
 
-  // Spawn C2's real explosion particles at a world position.
-  // Uses the same 4 particle types the game uses for the local player.
+
+  // Canvas explosion with additive blending — replicates C2's particle look.
+  // C2 uses red sprites (#F44336) with additive blend → orange/yellow on dark bg.
+  // Params from data.js: speed=256px, size=64px, ~20 particles total.
+  var explosions = [];
+
   function spawnExplosion(wx, wy) {
-    var rt = findRuntime();
-    if (!rt) return;
-    try {
-      var layout = rt.running_layout;
-      if (!layout || !layout.layers) return;
-
-      // Find Gameplay layer — that's where C2 puts explosion particles
-      var layer = null;
-      for (var i = 0; i < layout.layers.length; i++) {
-        if (layout.layers[i].name === "Gameplay") { layer = layout.layers[i]; break; }
-      }
-      if (!layer) layer = layout.layers[1] || layout.layers[0];
-      if (!layer) return;
-
-      // Same 4 particle types C2 uses for real explosions
-      var types = ["ExplosionParticles0", "ExplosionParticles1",
-                   "ExplosionParticles2", "ExplosionParticles3"];
-      for (var t = 0; t < types.length; t++) {
-        var typeObj = rt.types[types[t]];
-        if (!typeObj) continue;
-        var inst = rt.createInstance(typeObj, layer, wx, wy);
-        if (inst) {
-          // Force position in case createInstance placed it elsewhere
-          inst.x = wx;
-          inst.y = wy;
-          inst.set_bbox_changed();
-          rt.redraw = true;
-        }
-      }
-    } catch(e) { console.warn("[MP] spawnExplosion failed:", e); }
+    var particles = [];
+    for (var i = 0; i < 22; i++) {
+      var angle = Math.random() * Math.PI * 2;
+      var speed = 55 + Math.random() * 130;
+      var size  = 9  + Math.random() * 18;
+      particles.push({
+        wx: wx, wy: wy,          // world origin (for camera-relative drawing)
+        ox: 0,  oy: 0,           // accumulated pixel offset from origin
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 45,
+        size: size,
+        life: 1.0,
+        decay: 0.022 + Math.random() * 0.018
+      });
+    }
+    explosions.push(particles);
   }
 
-  function drawExplosions() { /* no-op: C2 renders real explosions natively */ }
+  function drawExplosions() {
+    if (!overlayCtx || explosions.length === 0) return;
+    var ctx = overlayCtx;
+    var alive = [];
+
+    for (var e = 0; e < explosions.length; e++) {
+      var group = explosions[e];
+      var anyAlive = false;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";  // additive = red→orange/yellow
+
+      for (var i = 0; i < group.length; i++) {
+        var p = group[i];
+        p.life -= p.decay;
+        if (p.life <= 0) continue;
+        anyAlive = true;
+
+        // Move in screen space (velocity in px/s at 60fps ≈ /60 per tick)
+        p.oy += p.vy / 60;
+        p.ox += p.vx / 60;
+        p.vy += 2;  // slight gravity
+
+        // Get current screen position of world origin + particle offset
+        var sp = worldToScreen(p.wx, p.wy);
+        if (!sp) continue;
+        var px = sp.x + p.ox;
+        var py = sp.y + p.oy;
+
+        var a = p.life;
+        var r = p.size * p.life;
+
+        // Three concentric circles: white core → orange → red outer
+        ctx.fillStyle = "rgba(255,240,120," + (a * 0.95) + ")";
+        ctx.beginPath(); ctx.arc(px, py, r * 0.35, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = "rgba(255,130,0," + (a * 0.75) + ")";
+        ctx.beginPath(); ctx.arc(px, py, r * 0.65, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = "rgba(244,67,54," + (a * 0.55) + ")";
+        ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.fill();
+      }
+
+      ctx.restore();
+      if (anyAlive) alive.push(group);
+    }
+    explosions = alive;
+  }
+
 
   function drawMinimap() {
     if (!overlayCtx) return;
@@ -656,8 +714,8 @@
       var p = players[id];
       if (!p || now - (p.lastSeen || 0) > STALE_MS) return;
 
-      // Dead players: show explosion, then nothing
-      if (p.dead) return; // explosion already spawned on death message
+      // Dead/exploding players: hide ghost (explosion draws via canvas)
+      if (p.dead || p.exploding) return;
 
       var sp = worldToScreen(p.x, p.y);
       if (!sp) return;
@@ -681,6 +739,7 @@
         }
       }
     });
+    drawExplosions();
     drawMinimap();
   }
 
