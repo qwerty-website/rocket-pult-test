@@ -443,10 +443,34 @@
     conn.on("error", function (e) { console.warn("[MP]", e); });
   }
 
+  // PeerJS config with multiple STUN servers so at least one works through
+  // most school/work firewalls. Falls back gracefully if WebRTC is blocked.
+  var PEER_CFG = {
+    debug: 0,
+    config: {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:global.stun.twilio.com:3478" },
+        { urls: "stun:stun.cloudflare.com:3478" }
+      ],
+      iceTransportPolicy: "all",
+      bundlePolicy: "balanced"
+    }
+  };
+
+  function makePeer(id) {
+    var opts = Object.assign({}, PEER_CFG);
+    if (id) opts = Object.assign({ key: undefined }, opts);
+    return id ? new Peer(id, opts) : new Peer(opts);
+  }
+
   function hostLobby() {
     myCode = genCode(); myId = PEER_PREFIX + myCode.toLowerCase();
     isHost = true; myColorIdx = 0; myName = "P1";
-    peer = new Peer(myId, { debug: 0 });
+
+    peer = makePeer(myId);
     peer.on("open", function () {
       connected = true; showToast("LOBBY READY!"); updateHUD(); refreshPanel(); startBroadcast();
     });
@@ -463,19 +487,66 @@
     });
     peer.on("error", function (e) {
       if (e.type === "unavailable-id") { peer.destroy(); peer = null; hostLobby(); }
+      else if (e.type === "network") {
+        showToast("NETWORK BLOCKED — TRY DIFFERENT WIFI");
+        peer.destroy(); peer = null; connected = false; updateHUD(); refreshPanel();
+      }
       else showToast("ERR: " + e.type);
+    });
+    peer.on("disconnected", function () {
+      if (connected) { showToast("RECONNECTING..."); try { peer.reconnect(); } catch(e) {} }
     });
   }
 
   function joinLobby(code) {
-    isHost = false; peer = new Peer({ debug: 0 });
+    isHost = false;
+    peer = makePeer(null);
+
+    // Timeout if PeerJS server unreachable after 8s
+    var openTimer = setTimeout(function () {
+      if (!connected) {
+        showToast("NETWORK BLOCKED — CANT REACH SERVER");
+        peer.destroy(); peer = null; refreshPanel();
+      }
+    }, 8000);
+
     peer.on("open", function (id) {
+      clearTimeout(openTimer);
       myId = id;
-      var conn = peer.connect(PEER_PREFIX + code.toLowerCase(), { reliable: false, serialization: "raw" });
-      conn.on("open", function () { wireConn(conn); connected = true; showToast("JOINED!"); updateHUD(); refreshPanel(); startBroadcast(); });
-      conn.on("error", function () { showToast("FAILED — CHECK CODE"); });
+      var conn = peer.connect(PEER_PREFIX + code.toLowerCase(), { reliable: true });
+
+      // Timeout if host unreachable after 6s
+      var connTimer = setTimeout(function () {
+        if (!connected) {
+          showToast("HOST NOT FOUND — CHECK CODE");
+          peer.destroy(); peer = null; refreshPanel();
+        }
+      }, 6000);
+
+      conn.on("open", function () {
+        clearTimeout(connTimer);
+        wireConn(conn); connected = true;
+        showToast("JOINED!"); updateHUD(); refreshPanel(); startBroadcast();
+      });
+      conn.on("error", function (e) {
+        clearTimeout(connTimer);
+        showToast("FAILED — " + (e && e.type ? e.type.toUpperCase() : "CHECK CODE"));
+      });
     });
-    peer.on("error", function (e) { showToast("ERR: " + e.type); });
+    peer.on("error", function (e) {
+      clearTimeout(openTimer);
+      if (e.type === "network" || e.type === "server-error") {
+        showToast("NETWORK BLOCKED — TRY DIFFERENT WIFI");
+      } else if (e.type === "peer-unavailable") {
+        showToast("HOST NOT FOUND — CHECK CODE");
+      } else {
+        showToast("ERR: " + e.type);
+      }
+      peer.destroy(); peer = null; refreshPanel();
+    });
+    peer.on("disconnected", function () {
+      if (connected) { try { peer.reconnect(); } catch(e) {} }
+    });
   }
 
   function disconnect() {
