@@ -1,5 +1,8 @@
 "use strict";
 
+// ROCKETPULT MULTIPLAYER — v14
+var MP_VERSION = "v14";
+
 (function () {
 
   /* =============================================
@@ -445,7 +448,14 @@
 
   // PeerJS config with multiple STUN servers so at least one works through
   // most school/work firewalls. Falls back gracefully if WebRTC is blocked.
+  // Explicit PeerJS server config — MUST be the same for host and joiner
+  // regardless of which site they load the game from (Netlify vs GitHub).
+  // Using PeerJS's own cloud server with explicit host/port/path.
   var PEER_CFG = {
+    host: "0.peerjs.com",
+    port: 443,
+    path: "/",
+    secure: true,
     debug: 0,
     config: {
       iceServers: [
@@ -454,15 +464,12 @@
         { urls: "stun:stun2.l.google.com:19302" },
         { urls: "stun:global.stun.twilio.com:3478" },
         { urls: "stun:stun.cloudflare.com:3478" }
-      ],
-      iceTransportPolicy: "all",
-      bundlePolicy: "balanced"
+      ]
     }
   };
 
   function makePeer(id) {
-    var opts = Object.assign({}, PEER_CFG);
-    if (id) opts = Object.assign({ key: undefined }, opts);
+    var opts = JSON.parse(JSON.stringify(PEER_CFG));
     return id ? new Peer(id, opts) : new Peer(opts);
   }
 
@@ -500,28 +507,34 @@
 
   function joinLobby(code) {
     isHost = false;
+    var targetId = PEER_PREFIX + code.toLowerCase();
+
+    showToast("CONNECTING...");
     peer = makePeer(null);
 
-    // Timeout if PeerJS server unreachable after 8s
+    // If PeerJS signaling server unreachable after 12s
     var openTimer = setTimeout(function () {
       if (!connected) {
-        showToast("NETWORK BLOCKED — CANT REACH SERVER");
-        peer.destroy(); peer = null; refreshPanel();
+        showToast("CANT REACH SERVER — CHECK INTERNET");
+        if (peer) { peer.destroy(); peer = null; }
+        refreshPanel();
       }
-    }, 8000);
+    }, 12000);
 
     peer.on("open", function (id) {
       clearTimeout(openTimer);
       myId = id;
-      var conn = peer.connect(PEER_PREFIX + code.toLowerCase(), { reliable: true });
+      showToast("SERVER OK — FINDING HOST...");
+      var conn = peer.connect(targetId, { reliable: true });
 
-      // Timeout if host unreachable after 6s
+      // ICE negotiation can take up to 20s on restricted networks
       var connTimer = setTimeout(function () {
         if (!connected) {
-          showToast("HOST NOT FOUND — CHECK CODE");
-          peer.destroy(); peer = null; refreshPanel();
+          showToast("HOST UNREACHABLE — HOST MAY HAVE LEFT");
+          if (peer) { peer.destroy(); peer = null; }
+          refreshPanel();
         }
-      }, 6000);
+      }, 20000);
 
       conn.on("open", function () {
         clearTimeout(connTimer);
@@ -530,20 +543,26 @@
       });
       conn.on("error", function (e) {
         clearTimeout(connTimer);
-        showToast("FAILED — " + (e && e.type ? e.type.toUpperCase() : "CHECK CODE"));
+        showToast("CONN ERR — " + (e && e.type ? e.type : "UNKNOWN"));
       });
     });
+
     peer.on("error", function (e) {
       clearTimeout(openTimer);
       if (e.type === "network" || e.type === "server-error") {
-        showToast("NETWORK BLOCKED — TRY DIFFERENT WIFI");
+        showToast("NETWORK BLOCKED — TRY DIFFERENT NETWORK");
       } else if (e.type === "peer-unavailable") {
-        showToast("HOST NOT FOUND — CHECK CODE");
+        // Host ID not on server — they may be on a different session
+        showToast("HOST NOT FOUND — MAKE SURE HOST CLICKED START");
+      } else if (e.type === "unavailable-id") {
+        showToast("ID TAKEN — RETRYING");
       } else {
         showToast("ERR: " + e.type);
       }
-      peer.destroy(); peer = null; refreshPanel();
+      if (peer) { peer.destroy(); peer = null; }
+      refreshPanel();
     });
+
     peer.on("disconnected", function () {
       if (connected) { try { peer.reconnect(); } catch(e) {} }
     });
@@ -986,7 +1005,8 @@
     ".rp-prow{display:flex;align-items:center;gap:7px;font-size:9px;letter-spacing:1px;padding:2px 0;}",
     ".rp-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;display:inline-block;}",
     ".rp-toast{position:fixed;bottom:100px;right:12px;z-index:10002;background:#44aaff;color:#000;font:bold 9px monospace;letter-spacing:2px;padding:5px 12px;pointer-events:none;animation:rpt 2.2s forwards;}",
-    "@keyframes rpt{0%{opacity:1;transform:translateY(0)}80%{opacity:1}100%{opacity:0;transform:translateY(-16px)}}"
+    "@keyframes rpt{0%{opacity:1;transform:translateY(0)}80%{opacity:1}100%{opacity:0;transform:translateY(-16px)}}",
+    ".rp-ver{font-size:7px;color:#223;letter-spacing:2px;text-align:center;margin-bottom:4px;}"
   ].join("");
 
   /* =============================================
