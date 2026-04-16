@@ -629,7 +629,8 @@ var MP_VERSION = "v14";
   // Ghost rocket matching actual single-player sprite.
   // Body: gray #424242, stripe: pink #E91E63, nose: dark #212121
   // Outer fins are drawn in the player's color (different from the inner body).
-  function drawGhost(ctx, sx, sy, angleRad, color, label) {
+  function drawGhost(ctx, sx, sy, angleRad, color, label, finColor) {
+    finColor = finColor || color;
     // Glow dot — always visible position indicator
     ctx.save();
     ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 14;
@@ -668,8 +669,8 @@ var MP_VERSION = "v14";
     ctx.moveTo(W, -L * 0.1); ctx.lineTo(W * 1.6, -L * 0.55); ctx.lineTo(W, -L * 0.38);
     ctx.closePath(); ctx.fill();
 
-    // Outer fins — player color (the different-color fins the user requested)
-    ctx.fillStyle = color;
+    // Outer fins — custom fin color
+    ctx.fillStyle = finColor;
     ctx.beginPath();
     ctx.moveTo(-W, -L * 0.22); ctx.lineTo(-W * 2.4, -L * 0.7); ctx.lineTo(-W, -L * 0.52);
     ctx.closePath(); ctx.fill();
@@ -795,11 +796,83 @@ var MP_VERSION = "v14";
     });
   }
 
+  // ── Trail particles ─────────────────────────────────────────────────
+  function spawnTrail(sx, sy, angleRad, trail, color) {
+    if (!trail || trail === "none") return;
+    var nx = sx - Math.sin(angleRad + Math.PI/2) * 15;
+    var ny = sy + Math.cos(angleRad + Math.PI/2) * 15;
+    for (var i = 0; i < 2; i++) {
+      var sp2 = (Math.random()-0.5) * 1.2;
+      trailParticles.push({
+        x: nx+(Math.random()-0.5)*4, y: ny+(Math.random()-0.5)*4,
+        vx: -Math.sin(angleRad+Math.PI/2)*(2+Math.random()*3)+sp2,
+        vy:  Math.cos(angleRad+Math.PI/2)*(2+Math.random()*3)+sp2,
+        life: 1.0, decay: 0.045+Math.random()*0.04,
+        size: trail==="fire" ? 5+Math.random()*6 : 3+Math.random()*3,
+        type: trail, color: color
+      });
+    }
+  }
+
+  function drawTrails() {
+    if (!overlayCtx || trailParticles.length === 0) return;
+    var ctx = overlayCtx;
+    var alive = [];
+    ctx.save();
+    for (var i = 0; i < trailParticles.length; i++) {
+      var p = trailParticles[i];
+      p.life -= p.decay;
+      if (p.life <= 0) continue;
+      alive.push(p);
+      p.x += p.vx; p.y += p.vy; p.vy += 0.05;
+      var a = p.life, r = p.size * p.life;
+      if (p.type === "stars") {
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.life*6);
+        ctx.fillStyle = "rgba(255,240,100,"+a+")";
+        ctx.shadowColor = "rgba(255,220,0,"+a+")"; ctx.shadowBlur = 6;
+        var sr = r*0.9; ctx.beginPath();
+        for (var s = 0; s < 5; s++) {
+          var ang = s*4*Math.PI/5 - Math.PI/2, ang2 = ang+2*Math.PI/5;
+          if(s===0) ctx.moveTo(Math.cos(ang)*sr, Math.sin(ang)*sr);
+          else ctx.lineTo(Math.cos(ang)*sr, Math.sin(ang)*sr);
+          ctx.lineTo(Math.cos(ang2)*sr*0.4, Math.sin(ang2)*sr*0.4);
+        }
+        ctx.closePath(); ctx.fill(); ctx.restore();
+      } else if (p.type === "sparkle") {
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.life*4);
+        ctx.strokeStyle = "rgba(200,200,255,"+a+")"; ctx.lineWidth = 1.5;
+        ctx.shadowColor = "rgba(150,150,255,"+a+")"; ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.moveTo(-r,0);ctx.lineTo(r,0); ctx.moveTo(0,-r);ctx.lineTo(0,r);
+        ctx.moveTo(-r*.7,-r*.7);ctx.lineTo(r*.7,r*.7);
+        ctx.moveTo(r*.7,-r*.7);ctx.lineTo(-r*.7,r*.7);
+        ctx.stroke(); ctx.restore();
+      } else if (p.type === "fire") {
+        ctx.globalCompositeOperation = "lighter";
+        ctx.fillStyle = "rgba(255,180,0,"+(a*0.6)+")";
+        ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle = "rgba(255,80,0,"+(a*0.4)+")";
+        ctx.beginPath(); ctx.arc(p.x,p.y,r*1.3,0,Math.PI*2); ctx.fill();
+        ctx.globalCompositeOperation = "source-over";
+      }
+    }
+    ctx.shadowBlur = 0; ctx.restore();
+    trailParticles = alive;
+  }
+
   function drawOverlay() {
     if (!overlayCtx) return;
     overlayCtx.clearRect(0, 0, overlayEl.width, overlayEl.height);
     if (!connected) return;
     var now = Date.now();
+
+    // My trail
+    var myPos = getRocketPos();
+    if (myPos && myLaunched && mySkin.trail !== "none") {
+      var mySP = worldToScreen(myPos.x, myPos.y);
+      if (mySP) spawnTrail(mySP.x, mySP.y, myPos.angle, mySkin.trail, COLORS[myColorIdx]);
+    }
+
     Object.keys(players).forEach(function (id) {
       var p = players[id];
       if (!p || now - (p.lastSeen || 0) > STALE_MS) return;
@@ -811,7 +884,8 @@ var MP_VERSION = "v14";
       if (!sp) return;
       if (sp.x < -260 || sp.x > overlayEl.width + 260 || sp.y < -260 || sp.y > overlayEl.height + 260) return;
 
-      drawGhost(overlayCtx, sp.x, sp.y, p.angle || 0, p.color, p.name || "?");
+      drawGhost(overlayCtx, sp.x, sp.y, p.angle || 0, p.color, p.name || "?", p.finColor);
+      if (p.launched && p.trail && p.trail !== "none") spawnTrail(sp.x, sp.y, p.angle||0, p.trail, p.color);
 
       // Collision proximity ring (only when collision active and not off)
       if (myCollisionActive && p.launched && settings.collision !== "off") {
@@ -829,6 +903,7 @@ var MP_VERSION = "v14";
         }
       }
     });
+    drawTrails();
     drawExplosions();
     drawMinimap();
   }
@@ -900,6 +975,26 @@ var MP_VERSION = "v14";
     return "<div class='rp-settings'>" + modesRow + tlRow + colRow + "</div>";
   }
 
+  function customizeHTML() {
+    var TRAIL_TYPES  = ["none","stars","sparkle","fire"];
+    var TRAIL_LABELS = ["OFF","★ STARS","✦ SPARKLE","🔥 FIRE"];
+    var finBtns = COLORS.map(function(c,i){
+      var active = mySkin.finColorIdx===i?" active":"";
+      return "<button class='rp-cus-col"+active+"' style='background:"+c+";border-color:"+c+";'"
+            +" onclick='window.__rpSetFin("+i+")'></button>";
+    }).join("");
+    var trailBtns = TRAIL_TYPES.map(function(t,i){
+      var active = mySkin.trail===t?" active":"";
+      return "<button class='rp-tl-btn"+active+"' onclick='window.__rpSetTrail(\""+t+"\")'>"
+            +TRAIL_LABELS[i]+"</button>";
+    }).join("");
+    return "<div class='rp-cus-box'>"
+          +"<div class='rp-cus-title'>CUSTOMIZE</div>"
+          +"<div class='rp-cus-row'><span>FINS</span><div class='rp-cus-cols'>"+finBtns+"</div></div>"
+          +"<div class='rp-cus-row'><span>TRAIL</span><div class='rp-btn-group rp-trail-grp'>"+trailBtns+"</div></div>"
+          +"</div>";
+  }
+
   function buildPanel() {
     if (!connected) {
       return "<h1>MULTIPLAYER</h1>"
@@ -908,6 +1003,7 @@ var MP_VERSION = "v14";
            + "<div class='rp-divider'>OR JOIN</div>"
            + "<input id='rp-join-inp' maxlength='4' placeholder='CODE' autocomplete='off'/>"
            + "<button class='rp-btn-sec' onclick='window.__rpJoin()'>JOIN</button>"
+           + customizeHTML()
            + "<button class='rp-btn-dim' onclick='window.__rpClose()'>CLOSE</button>";
     }
     var startBtn = "";
@@ -946,6 +1042,8 @@ var MP_VERSION = "v14";
   /* =============================================
      GLOBAL CALLBACKS
   ============================================= */
+  window.__rpSetFin   = function(i){ mySkin.finColorIdx=i; saveSkin(); refreshPanel(); };
+  window.__rpSetTrail = function(t){ mySkin.trail=t; saveSkin(); refreshPanel(); };
   window.__rpHost       = function () { if (typeof Peer === "undefined") { showToast("PEERJS NOT LOADED"); return; } hostLobby(); };
   window.__rpJoin       = function () {
     if (typeof Peer === "undefined") { showToast("PEERJS NOT LOADED"); return; }
@@ -1006,7 +1104,14 @@ var MP_VERSION = "v14";
     ".rp-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;display:inline-block;}",
     ".rp-toast{position:fixed;bottom:100px;right:12px;z-index:10002;background:#44aaff;color:#000;font:bold 9px monospace;letter-spacing:2px;padding:5px 12px;pointer-events:none;animation:rpt 2.2s forwards;}",
     "@keyframes rpt{0%{opacity:1;transform:translateY(0)}80%{opacity:1}100%{opacity:0;transform:translateY(-16px)}}",
-    ".rp-ver{font-size:7px;color:#223;letter-spacing:2px;text-align:center;margin-bottom:4px;}"
+    ".rp-ver{font-size:7px;color:#223;letter-spacing:2px;text-align:center;margin-bottom:4px;}",
+    ".rp-cus-box{margin-top:10px;border:1px solid #111;padding:8px;}",
+    ".rp-cus-title{font-size:8px;color:#446;letter-spacing:3px;margin-bottom:6px;}",
+    ".rp-cus-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:8px;color:#446;letter-spacing:1px;}",
+    ".rp-cus-cols{display:flex;gap:3px;flex-wrap:wrap;max-width:180px;}",
+    ".rp-cus-col{width:16px;height:16px;border:2px solid #222;cursor:pointer;border-radius:2px;transition:outline .1s;}",
+    ".rp-cus-col.active{outline:2px solid #fff;outline-offset:1px;}",
+    ".rp-trail-grp{flex-wrap:wrap;gap:3px;max-width:180px;}"
   ].join("");
 
   /* =============================================
