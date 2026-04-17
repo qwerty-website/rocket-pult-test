@@ -54,6 +54,18 @@ var MP_VERSION = "v14";
   var lastBumpTime      = 0;
   var myStillSince      = 0;   // timestamp when rocket last had significant movement
   var myExploding       = false; // true while C2 explosion particles are active
+  var trailParticles    = [];
+
+  // Customization — persisted in localStorage
+  var CUSTOM_KEY = "rktplt_custom_v1";
+  var mySkin = (function() {
+    try { return JSON.parse(localStorage.getItem(CUSTOM_KEY)) || {}; } catch(e) { return {}; }
+  })();
+  if (!mySkin.finColorIdx) mySkin.finColorIdx = 0;
+  if (!mySkin.trail)       mySkin.trail = "stars";
+  function saveSkin() {
+    try { localStorage.setItem(CUSTOM_KEY, JSON.stringify(mySkin)); } catch(e) {}
+  }
 
   var overlayEl  = null;
   var overlayCtx = null;
@@ -1078,7 +1090,7 @@ var MP_VERSION = "v14";
     ".rp-res-title{font-size:12px;color:#ffaa00;letter-spacing:5px;text-align:center;margin-bottom:12px;}",
     ".rp-res-row{display:flex;justify-content:space-between;font-size:10px;padding:3px 0;border-bottom:1px solid #111;}",
     ".rp-res-close{width:100%;margin-top:12px;padding:8px;cursor:pointer;background:#ffaa00;color:#000;font:bold 9px monospace;letter-spacing:2px;border:none;}",
-    "#rp-panel{position:fixed;bottom:50px;right:10px;z-index:10000;background:#080808;border:3px solid #44aaff;padding:16px;font-family:monospace;color:#ccc;width:240px;box-shadow:0 0 40px #44aaff22;}",
+    "#rp-panel{position:fixed;bottom:50px;right:10px;z-index:10000;background:#080808;border:3px solid #44aaff;padding:16px;font-family:monospace;color:#ccc;width:290px;box-shadow:0 0 40px #44aaff22;}",
     "#rp-panel h1{margin:0 0 6px;font-size:11px;color:#44aaff;letter-spacing:5px;text-align:center;}",
     ".rp-sub{font-size:8px;color:#335;letter-spacing:2px;text-align:center;margin-bottom:10px;}",
     ".rp-divider{font-size:8px;color:#224;letter-spacing:2px;text-align:center;margin:10px 0 8px;border-top:1px solid #111;padding-top:10px;}",
@@ -1108,10 +1120,10 @@ var MP_VERSION = "v14";
     ".rp-cus-box{margin-top:10px;border:1px solid #111;padding:8px;}",
     ".rp-cus-title{font-size:8px;color:#446;letter-spacing:3px;margin-bottom:6px;}",
     ".rp-cus-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:8px;color:#446;letter-spacing:1px;}",
-    ".rp-cus-cols{display:flex;gap:3px;flex-wrap:wrap;max-width:180px;}",
-    ".rp-cus-col{width:16px;height:16px;border:2px solid #222;cursor:pointer;border-radius:2px;transition:outline .1s;}",
+    ".rp-cus-cols{display:flex;gap:4px;flex-wrap:wrap;}",
+    ".rp-cus-col{width:20px;height:20px;border:2px solid #222;cursor:pointer;border-radius:2px;}",
     ".rp-cus-col.active{outline:2px solid #fff;outline-offset:1px;}",
-    ".rp-trail-grp{flex-wrap:wrap;gap:3px;max-width:180px;}"
+    ".rp-trail-grp{flex-wrap:wrap;gap:3px;max-width:210px;}"
   ].join("");
 
   /* =============================================
