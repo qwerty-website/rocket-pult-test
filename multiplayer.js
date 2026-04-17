@@ -1,7 +1,7 @@
 "use strict";
 
 // ROCKETPULT MULTIPLAYER — v14
-var MP_VERSION = "v14";
+var MP_VERSION = "v16";
 
 (function () {
 
@@ -458,25 +458,32 @@ var MP_VERSION = "v14";
     conn.on("error", function (e) { console.warn("[MP]", e); });
   }
 
-  // PeerJS config with multiple STUN servers so at least one works through
-  // most school/work firewalls. Falls back gracefully if WebRTC is blocked.
-  // Explicit PeerJS server config — MUST be the same for host and joiner
-  // regardless of which site they load the game from (Netlify vs GitHub).
-  // Using PeerJS's own cloud server with explicit host/port/path.
+  // ICE config with STUN + TURN servers.
+  // STUN alone fails on strict school/work networks where direct P2P is blocked.
+  // TURN relays all traffic through a server — works even behind strict firewalls.
+  // Using OpenRelay (open-relay.metered.ca) — completely free, no account needed,
+  // runs on port 443 so it passes through almost every firewall.
   var PEER_CFG = {
-    host: "0.peerjs.com",
-    port: 443,
-    path: "/",
-    secure: true,
     debug: 0,
     config: {
       iceServers: [
+        // STUN (fast, free, works on open networks)
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "stun:stun2.l.google.com:19302" },
-        { urls: "stun:global.stun.twilio.com:3478" },
-        { urls: "stun:stun.cloudflare.com:3478" }
-      ]
+        // TURN via OpenRelay — relays when direct connection fails
+        // UDP 3478 (may be blocked on strict networks)
+        { urls: "turn:openrelay.metered.ca:80",
+          username: "openrelayproject", credential: "openrelayproject" },
+        // TCP 80 (usually allowed)
+        { urls: "turn:openrelay.metered.ca:80?transport=tcp",
+          username: "openrelayproject", credential: "openrelayproject" },
+        // TLS 443 (same port as HTTPS — almost never blocked)
+        { urls: "turns:openrelay.metered.ca:443",
+          username: "openrelayproject", credential: "openrelayproject" },
+        { urls: "turns:openrelay.metered.ca:443?transport=tcp",
+          username: "openrelayproject", credential: "openrelayproject" }
+      ],
+      iceCandidatePoolSize: 10
     }
   };
 
